@@ -1,0 +1,67 @@
+WATABOU DOOR TYPES - CLASSIFICATION
+====================================
+
+Based on analysis of Abbey of the Moon King and other dungeons.
+
+TYPE 0: Open passage / No door
+  - Graphically: No door graphic shown
+  - MASK ACTION: Do NOT mark (treat as floor=255)
+
+TYPE 1: Normal door
+  - Graphically: Solid line across passage
+  - MASK ACTION: MARK as door (127)
+
+TYPE 2: Doorway with no door / Open door frame
+  - Graphically: Looks similar to walls, just an opening
+  - Note: While might indicate "open door", visually looks too much like walls
+  - MASK ACTION: Do NOT mark (treat as floor=255)
+
+TYPE 3: Stairs to another dungeon level
+  - Graphically: Stairs icon
+  - MASK ACTION: Do NOT mark (not a door)
+
+TYPE 4: Barred passage / Portcullis
+  - Graphically: Dotted line pattern (iron bars)
+  - MASK ACTION: Do NOT mark (treat as wall=0)
+
+TYPE 5: Normal door (appears same as Type 1)
+  - Graphically: Solid door line
+  - MASK ACTION: MARK as door (127)
+
+TYPE 6: Secret door
+  - Graphically: Half-wall graphic showing hidden door
+  - Note: Tricky for model due to wall-like appearance, but marking for now
+  - MASK ACTION: MARK as door (127)
+
+TYPE 7: [Assumed normal door - not yet observed]
+  - Status: Not found in sample dungeons, assuming similar to Type 1/5
+  - MASK ACTION: MARK as door (127)
+
+TYPE 8: Barred passage / Portcullis
+  - Graphically: Dotted line pattern (iron bars)
+  - MASK ACTION: Do NOT mark (treat as wall=0)
+
+TYPE 9: Stairways between rooms (internal stairs)
+  - Graphically: Stairs connecting rooms on same level
+  - MASK ACTION: Do NOT mark (not a door)
+
+
+SUMMARY FOR MASK GENERATION:
+-----------------------------
+MARK AS DOORS (value=127): Types 1, 5, 6, 7
+TREAT AS FLOOR (value=255): Types 0, 2, 3, 9
+TREAT AS WALLS (value=0): Types 4, 8
+
+
+IMPLEMENTATION:
+---------------
+Update generate_foundry_masks.py to filter doors:
+
+DOOR_TYPES_TO_MARK = {1, 5, 6, 7}  # Only mark these as doors (127)
+DOOR_TYPES_AS_WALLS = {4, 8}  # Barred passages - don't render at all
+
+for door in doors:
+    if door.get('type') in DOOR_TYPES_TO_MARK:
+        # Render as door (127)
+    else:
+        # Skip or render as floor (255)

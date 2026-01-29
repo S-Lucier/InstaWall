@@ -1,0 +1,98 @@
+3-CLASS TRAINING RESULTS - 100 EPOCHS
+======================================
+
+FINAL PERFORMANCE (Epoch 100):
+- Walls:  0.9945 Dice
+- Doors:  0.8980 Dice
+- Floors: 0.9822 Dice
+- Average: 0.9582 Dice
+
+BEST CHECKPOINT: Epoch 90
+- Walls:  0.9960 Dice
+- Doors:  0.9201 Dice (BEST)
+- Floors: 0.9862 Dice
+- Average: 0.9674 Dice
+
+MODEL: saved_models_3class/checkpoint_epoch_90.pth.tar
+
+
+TRAINING DETAILS:
+=================
+- Dataset: 105 training, 14 validation (3-class masks with doors)
+- Class weights: Walls 0.45, Doors 32.0, Floors 1.36
+- Loss: CrossEntropyLoss with class weighting
+- Epochs: 100
+- Save interval: Every 5 epochs
+- Batch size: 4
+- Learning rate: 1e-4
+
+
+PROGRESSION (Door Dice Score):
+==============================
+Epoch   5: 0.3623
+Epoch  10: 0.7484
+Epoch  15: 0.8279
+Epoch  20: 0.6985 (dip)
+Epoch  25: 0.8229
+Epoch  30: 0.8657
+Epoch  35: 0.8832
+Epoch  40: 0.8001 (dip)
+Epoch  45: 0.8787
+Epoch  50: 0.8805
+Epoch  55: 0.9177
+Epoch  60: 0.8853
+Epoch  65: 0.9114
+Epoch  70: 0.7514 (dip)
+Epoch  75: 0.8998
+Epoch  80: 0.9048
+Epoch  85: 0.8798
+Epoch  90: 0.9201 ← BEST
+Epoch  95: 0.9091
+Epoch 100: 0.8980
+
+
+KEY INSIGHTS:
+=============
+1. Class weighting (32x for doors) was ESSENTIAL
+   - Without it: Door Dice = 0.0
+   - With it: Door Dice = 0.92
+
+2. Validation masks MUST include all 3 classes
+   - Initially had binary masks (0/255 only)
+   - Model learned doors but showed 0.0 Dice due to missing ground truth
+   - Fixed by copying 3-class masks to validation set
+
+3. Door performance has some variance
+   - Occasional dips (epochs 20, 40, 70)
+   - Best to evaluate multiple checkpoints
+   - Epoch 90 most stable high performance
+
+4. 100 epochs was sufficient
+   - Rapid learning: 0.36 → 0.75 in first 10 epochs
+   - Refinement: 0.75 → 0.92 over remaining 90 epochs
+   - Diminishing returns after epoch 80
+
+
+COMPARISON TO BINARY MODEL:
+============================
+Binary (epoch 800):
+- Overall Dice: 0.9890
+- Only 2 classes (walls/floors)
+- Doors treated as floors
+
+3-Class (epoch 90):
+- Walls Dice:  0.9960 (better than binary)
+- Doors Dice:  0.9201 (NEW capability)
+- Floors Dice: 0.9862 (comparable to binary)
+- Average:     0.9674
+
+The 3-class model successfully learned to detect doors as a separate class
+while maintaining excellent walls/floors performance.
+
+
+NEXT STEPS:
+===========
+1. Use checkpoint_epoch_90.pth.tar for inference
+2. Test on real dungeon maps
+3. Visualize door predictions with inference_3class.py
+4. Optional: Train to 500-1000 epochs to potentially reach 0.95+ door Dice

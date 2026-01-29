@@ -1,0 +1,143 @@
+QUICK START GUIDE - U-NET DUNGEON WALL DETECTION
+================================================
+
+MOST COMMON TASKS
+-----------------
+
+1. PROCESS A SINGLE DUNGEON (Recommended Method)
+
+   python inference_enhanced.py --image path/to/dungeon.png --threshold 0.3 --output results/output.png
+
+   Output files:
+   - results/output.png (3-panel comparison visualization)
+   - results/output_processed_mask.png (final mask - use this one!)
+   - results/output_raw_mask.png (raw prediction before post-processing)
+
+
+2. COMPARE DIFFERENT SETTINGS
+
+   python compare_settings.py --image path/to/dungeon.png --output comparison.png
+
+   Shows 4 different approaches side-by-side to help you choose the best settings.
+
+
+3. GENERATE TRAINING MASKS FROM WATABOU EXPORTS
+
+   python generate_foundry_masks.py "C:\path\to\watabou_exports" --output data/new_batch
+
+   Requirements:
+   - Watabou PNG files (exported at 70px grid)
+   - Matching JSON files with same names
+   - See MASK_GENERATION_INSTRUCTIONS.txt
+
+
+4. TRAIN A NEW MODEL
+
+   python train.py
+
+   Prerequisites:
+   - Training data in data/train_images/ and data/train_masks/
+   - Validation data in data/val_images/ and data/val_masks/
+   - See TRAINING_INSTRUCTIONS.txt
+
+
+5. PREPARE DATASET FOR TRAINING
+
+   python prepare_dataset.py --input data/raw --train-ratio 0.8
+
+   Splits raw data into train/val sets (80/20 by default).
+
+
+PARAMETER CHEAT SHEET
+---------------------
+
+For typical Watabou dungeons:
+  --threshold 0.3 --closing-size 7 --min-size 100
+
+For dungeons with very grey floors:
+  --threshold 0.25 --closing-size 8
+
+For preserving fine details:
+  --threshold 0.35 --closing-size 3 --opening-size 1 --min-size 30
+
+For very clean/smooth masks:
+  --threshold 0.3 --closing-size 10 --opening-size 3 --min-size 150
+
+
+WHEN TO USE WHICH SCRIPT
+-------------------------
+
+inference.py:
+  ✓ Quick tests
+  ✓ You want raw model output
+  ✗ Masks have holes or noise
+
+inference_enhanced.py:
+  ✓ Production use (best quality)
+  ✓ Grey floors are problematic
+  ✓ Need clean, usable masks
+  ✓ Recommended for most use cases
+
+compare_settings.py:
+  ✓ Finding optimal parameters
+  ✓ Testing multiple approaches
+  ✓ Visual comparison needed
+
+
+CURRENT BEST MODEL
+-------------------
+Location: saved_models/checkpoint_epoch_20.pth.tar
+Backup: watabou_models/54_image_512x512_padded.pth.tar
+
+Performance: 98.49% Dice score
+Trained on: 54 Watabou dungeons (512×512 with padding)
+
+
+FILE ORGANIZATION
+-----------------
+
+Code:
+  train.py, inference.py, inference_enhanced.py
+  unet_model.py, dataset.py, utils.py
+  generate_foundry_masks.py, prepare_dataset.py, compare_settings.py
+
+Data:
+  data/train_images/, data/train_masks/
+  data/val_images/, data/val_masks/
+  data/raw/images/, data/raw/masks/
+
+Models:
+  saved_models/ (training checkpoints)
+  watabou_models/ (archived final models)
+
+Results:
+  results/ (inference outputs)
+  saved_predictions/ (training validation predictions)
+
+Documentation:
+  THIS FILE - Quick start for common tasks
+  SOLUTION_SUMMARY.txt - Complete overview
+  ENHANCED_INFERENCE_GUIDE.txt - Detailed inference guide
+  TRAINING_INSTRUCTIONS.txt - How to train models
+  MASK_GENERATION_INSTRUCTIONS.txt - How to generate masks
+  INFERENCE_INSTRUCTIONS.txt - Basic inference guide
+
+
+NEED HELP?
+----------
+
+Read the documentation files for detailed information:
+- General questions → SOLUTION_SUMMARY.txt
+- Inference problems → ENHANCED_INFERENCE_GUIDE.txt
+- Training issues → TRAINING_INSTRUCTIONS.txt
+- Mask generation → MASK_GENERATION_INSTRUCTIONS.txt
+
+Check your setup:
+  python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+
+Verify model exists:
+  dir saved_models
+
+Check training/validation data:
+  dir data\train_images
+  dir data\val_images

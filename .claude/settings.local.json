@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python prepare_dataset.py:*)",
+      "Bash(python unet_model.py:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(powercfg:*)",
+      "Bash(taskkill:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(ls:*)",
+      "WebFetch(domain:watabou.itch.io)",
+      "Bash(for e in 750 800 850 900 950 1000)",
+      "Bash(do awk \"/Epoch $e\\\\/1000/,/Validation Dice Score:/ {if \\(/Validation Dice Score:/\\) print \"\"$e:\"\", $4}\" \"C:\\\\Users\\\\shini\\\\UnetTinkering\\\\training_output.log\")",
+      "Bash(done)",
+      "Bash(for e in 500 550 600 650 700 750 800)",
+      "Bash(tee:*)",
+      "Bash(powershell -Command \"Get-Process python* | Format-Table Id, ProcessName, CPU, WorkingSet -AutoSize\")",
+      "Bash(powershell -Command \"Set-Location ''C:\\\\Users\\\\shini\\\\UnetTinkering''; python -u train_3class_attention_multi_extended.py 2>&1\")",
+      "Bash(shuf:*)",
+      "WebFetch(domain:arkenforge.com)",
+      "WebSearch",
+      "WebFetch(domain:wiki.roll20.net)",
+      "WebFetch(domain:dungeondraft-encyclopaedia.gitbook.io)",
+      "WebFetch(domain:github-wiki-see.page)",
+      "Bash(xargs:*)",
+      "Bash(dir \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\Model Imports\")",
+      "Bash(\"..\\\\.venv\\\\Scripts\\\\python.exe\":*)",
+      "Bash(set \"PYTHONPATH=Model Imports\")",
+      "Bash(cmd /c \"cd /d C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel && set PYTHONPATH=Model Imports && ..\\\\.venv\\\\Scripts\\\\python.exe inference_3class_enhanced.py --image watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png --output test_output.png\")",
+      "Bash(powershell -Command \"$env:PYTHONPATH=''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\Model Imports''; & ''C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe'' ''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\inference_3class_enhanced.py'' --image ''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png'' --output ''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\test_output.png''\")",
+      "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0, r''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\Model Imports''\\); exec\\(open\\(r''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\inference_3class_enhanced.py''\\).read\\(\\)\\)\" --image \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png\" --output \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\test_output.png\")",
+      "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0, r''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\Model Imports''\\); exec\\(open\\(r''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\inference_3class_enhanced.py''\\).read\\(\\)\\)\" --image \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png\" --checkpoint \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\saved_models_3class\\\\3class_aten_multi_1450.pth.tar\" --output \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\test_output.png\")",
+      "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\":*)",
+      "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\inference_3class_enhanced.py\" --image \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png\" --checkpoint \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\saved_models_3class\\\\3class_aten_multi_1450.pth.tar\" --output \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\test_output.png\")",
+      "Bash(gh repo view:*)"
+    ]
+  }
+}

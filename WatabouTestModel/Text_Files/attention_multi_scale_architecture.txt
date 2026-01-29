@@ -1,0 +1,176 @@
+ATTENTION + MULTI-SCALE U-NET ARCHITECTURE
+==========================================
+
+Created: unet_attention_aspp.py
+Training Script: train_3class_attention_multi.py
+
+
+ARCHITECTURE OVERVIEW
+=====================
+
+AttentionASPPUNet combines two enhancements:
+
+1. ATTENTION GATES (between encoder-decoder skip connections)
+   - Learn to focus on important spatial regions
+   - Especially helpful for small/rare features like doors
+   - Adds ~10% parameters with minimal speed impact
+
+2. ASPP BOTTLENECK (Atrous Spatial Pyramid Pooling)
+   - Multi-scale feature extraction at 5 different receptive fields:
+     * 1x1 conv: fine details
+     * 3x3 dilation 6: door-scale features
+     * 3x3 dilation 12: hallway-scale features
+     * 3x3 dilation 18: room-scale features
+     * Global pooling: scene-level context
+   - Adds ~11% parameters with ~15% speed impact
+
+
+MODEL STATISTICS
+================
+
+Standard U-Net:
+- Parameters: 31,037,763
+
+AttentionASPPUNet:
+- Parameters: 37,688,943
+- Increase: +6,651,180 parameters (+21.4%)
+
+Memory Impact:
+- Requires batch_size=2 instead of 4 (due to ASPP memory usage)
+- Effective batch size remains similar due to larger model capacity
+
+
+TRAINING CONFIGURATION
+======================
+
+File: train_3class_attention_multi.py
+
+Key Settings:
+- Model: AttentionASPPUNet (3 output channels)
+- Batch size: 2 (reduced from 4)
+- Epochs: 100 (default)
+- Save interval: Every 5 epochs
+- Class weights: [0.45, 32.0, 1.36] (walls, doors, floors)
+- Loss: CrossEntropyLoss with class weighting
+- Optimizer: Adam (lr=1e-4)
+- Output dir: saved_models_attention_multi/
+
+
+EXPECTED PERFORMANCE GAINS
+===========================
+
+Standard U-Net (100 epochs):
+- Walls: 0.9960
+- Doors: 0.9201 (baseline)
+- Floors: 0.9862
+- Average: 0.9674
+
+AttentionASPPUNet (estimated):
+- Walls: 0.9965+ (slight improvement)
+- Doors: 0.94-0.96 (significant improvement +0.02-0.04)
+- Floors: 0.9870+ (slight improvement)
+- Average: 0.98+
+
+Key Benefit: Better door detection through:
+1. Multi-scale features capture both large walls and tiny 70px doors
+2. Attention focuses model on sparse door locations
+
+
+SPEED COMPARISON
+================
+
+Standard U-Net:
+- ~25s per epoch (100 epochs = ~42 minutes)
+
+AttentionASPPUNet (estimated):
+- ~30-32s per epoch (100 epochs = ~50-55 minutes)
+- Slowdown: ~20-30% per epoch
+- Total extra time: ~8-13 minutes for 100 epochs
+
+Worth it for +2-4% door Dice improvement!
+
+
+ARCHITECTURE COMPONENTS
+========================
+
+1. AttentionGate:
+   - Applies between encoder skip and decoder features
+   - Learns spatial attention weights (0-1) per pixel
+   - Weights skip connection to focus on relevant regions
+   - Formula: attended_skip = skip × sigmoid(W_g(decoder) + W_x(skip))
+
+2. ASPP (Atrous Spatial Pyramid Pooling):
+   - 5 parallel branches with different receptive fields
+   - Atrous/dilated convolutions capture multi-scale context
+   - Global pooling adds image-level understanding
+   - All branches concatenated and projected to output channels
+
+3. DoubleConv:
+   - Same as standard U-Net
+   - Two 3x3 conv → BatchNorm → ReLU
+
+4. Overall Structure:
+   Encoder (4 levels) → ASPP Bottleneck → Decoder (4 levels with attention)
+
+
+HOW TO USE
+==========
+
+Training:
+```bash
+python train_3class_attention_multi.py
+```
+
+Key differences from standard training:
+- Different model import: from unet_attention_aspp import AttentionASPPUNet
+- Reduced batch size: BATCH_SIZE = 2
+- Separate checkpoint directory: saved_models_attention_multi/
+- Tracks best door Dice automatically
+
+Inference:
+- Use same inference_3class.py or inference_3class_enhanced.py
+- Just load checkpoint from saved_models_attention_multi/
+- Model architecture automatically detected from checkpoint
+
+
+DATA REQUIREMENTS
+=================
+
+NONE - uses exact same data as standard 3-class training:
+- data/train_images (105 samples)
+- data/train_masks (3-class: 0/127/255)
+- data/val_images (14 samples)
+- data/val_masks (3-class: 0/127/255)
+
+No preprocessing changes needed.
+
+
+WHEN TO USE THIS MODEL
+=======================
+
+Use AttentionASPPUNet when:
+✓ Door detection is critical
+✓ You have GPU with sufficient memory (needs ~1-2GB more than standard U-Net)
+✓ You can afford 20-30% longer training time
+✓ You want state-of-the-art small object detection
+
+Use Standard U-Net when:
+✓ Door Dice 0.92 is sufficient
+✓ Limited GPU memory
+✓ Training time is constrained
+✓ Simpler model preferred for deployment
+
+
+THEORETICAL MAXIMUM
+====================
+
+With current architecture (AttentionASPPUNet):
+- Door Dice ceiling: ~0.94-0.96 (realistic)
+- To push beyond 0.96 would require:
+  * Even more advanced architectures (Transformer-based)
+  * Higher resolution training (768x768 or 1024x1024)
+  * More training data
+  * Ensemble methods
+
+Current 0.92 (standard U-Net) → 0.94-0.96 (Attention+ASPP) is likely the practical limit
+for 512x512 resolution on this dataset size.

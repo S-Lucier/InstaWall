@@ -1,0 +1,285 @@
+WALL & DOOR DETECTION - COMPLETE INFERENCE GUIDE
+=================================================
+
+This guide covers the full pipeline from dungeon map image to VTT-ready wall data.
+
+MODEL INFORMATION
+-----------------
+Model: AttentionASPPUNet (3-class segmentation)
+Checkpoint: saved_models_3class/3class_aten_multi_1450.pth.tar
+Input: RGB dungeon map images (any resolution)
+Output: 3-class mask (walls=0/black, doors=127/gray, background=255/white)
+
+
+================================================================================
+STEP 1: RUN INFERENCE (Generate Mask from Map Image)
+================================================================================
+
+Basic command:
+--------------
+python -c "
+import torch
+import numpy as np
+from PIL import Image
+from unet_attention_aspp import AttentionASPPUNet
+import torchvision.transforms as transforms
+
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+model = AttentionASPPUNet(in_channels=3, out_channels=3).to(DEVICE)
+checkpoint = torch.load('saved_models_3class/3class_aten_multi_1450.pth.tar', map_location=DEVICE, weights_only=False)
+model.load_state_dict(checkpoint['state_dict'])
+model.eval()
+
+# CHANGE THESE PATHS:
+image_path = 'path/to/your/dungeon.png'
+output_path = 'results/dungeon_mask.png'
+
+original = Image.open(image_path).convert('RGB')
+orig_size = original.size
+
+transform = transforms.Compose([
+    transforms.Resize((512, 512)),
+    transforms.ToTensor(),
+])
+img_tensor = transform(original).unsqueeze(0).to(DEVICE)
+
+with torch.no_grad():
+    output = model(img_tensor)
+    prediction = output.argmax(dim=1).squeeze().cpu().numpy()
+
+mask_img = Image.fromarray(prediction.astype(np.uint8))
+mask_img = mask_img.resize(orig_size, Image.NEAREST)
+
+mask = np.array(mask_img)
+mask_output = np.zeros_like(mask, dtype=np.uint8)
+mask_output[mask == 0] = 0      # wall (black)
+mask_output[mask == 1] = 127    # door (gray)
+mask_output[mask == 2] = 255    # background (white)
+
+Image.fromarray(mask_output).save(output_path)
+print(f'Mask saved to {output_path}')
+"
+
+
+Using create_comparison.py (includes visualization):
+----------------------------------------------------
+The create_comparison.py script can also run inference. Modify the paths at the
+top of the script to point to your images.
+
+
+================================================================================
+STEP 2: POST-PROCESSING - MASK TO WALL SEGMENTS
+================================================================================
+
+The mask_to_walls scripts convert the 3-class mask into discrete wall and door
+line segments suitable for VTT import.
+
+Current version: v9 (mask_to_walls_v9.py)
+
+Basic usage:
+------------
+python mask_to_walls/mask_to_walls_v9.py --mask results/dungeon_mask.png --output results/dungeon_walls.png --grid-size 70
+
+Parameters:
+-----------
+--mask PATH          Input mask image (required)
+--output PATH        Output visualization PNG (default: wall_visualization_v9.png)
+--grid-size INT      Pixels per grid square (default: 70, adjust for your map)
+--epsilon INT        Douglas-Peucker simplification tolerance (default: auto from grid-size)
+--no-straighten      Disable automatic wall straightening
+--json-output PATH   Export segment data as JSON for further processing
+
+Example with JSON export:
+-------------------------
+python mask_to_walls/mask_to_walls_v9.py --mask results/dungeon_mask.png --output results/dungeon_walls.png --grid-size 70 --json-output results/dungeon_segments.json
+
+
+What mask_to_walls does:
+------------------------
+1. Extracts wall contours from black pixels (value 0)
+2. Extracts door regions from gray pixels (value 127)
+3. Simplifies wall geometry using Douglas-Peucker algorithm
+4. Straightens near-horizontal/vertical walls
+5. Extends wall corners to meet properly (L-corners and collinear segments)
+6. Extends doors to intersect with walls
+7. Splits walls at door intersections
+8. Snaps door endpoints to wall endpoints
+9. Removes invalid/disconnected segments
+
+Output visualization colors:
+- Blue lines = Walls
+- Red lines = Doors
+- Yellow dots = Junction points
+
+
+================================================================================
+STEP 3: CONVERT TO UNIVERSAL VTT FORMAT (.uvtt)
+================================================================================
+
+For import into Foundry VTT, Roll20, Fantasy Grounds, etc.
+
+Direct from mask (recommended):
+-------------------------------
+python mask_to_walls/walls_to_uvtt.py --mask results/dungeon_mask.png --image path/to/original_map.png --grid-size 70 --output results/dungeon.uvtt
+
+Two-step pipeline (if you need the intermediate JSON):
+------------------------------------------------------
+# Step 1: Generate JSON
+python mask_to_walls/mask_to_walls_v9.py --mask results/dungeon_mask.png --json-output results/segments.json --grid-size 70
+
+# Step 2: Convert to UVTT
+python mask_to_walls/walls_to_uvtt.py --json results/segments.json --image path/to/original_map.png --grid-size 70 --output results/dungeon.uvtt
+
+Parameters:
+-----------
+--mask PATH       Input mask (runs wall extraction internally)
+--json PATH       Pre-computed JSON from mask_to_walls (alternative to --mask)
+--image PATH      Original map image to embed in UVTT (required)
+--grid-size INT   Pixels per grid square (required)
+--output PATH     Output .uvtt file path (required)
+--epsilon INT     Douglas-Peucker epsilon (only with --mask)
+
+
+================================================================================
+COMPLETE EXAMPLE: FULL PIPELINE
+================================================================================
+
+# 1. Run inference
+python -c "
+import torch
+import numpy as np
+from PIL import Image
+from unet_attention_aspp import AttentionASPPUNet
+import torchvision.transforms as transforms
+
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+model = AttentionASPPUNet(in_channels=3, out_channels=3).to(DEVICE)
+checkpoint = torch.load('saved_models_3class/3class_aten_multi_1450.pth.tar', map_location=DEVICE, weights_only=False)
+model.load_state_dict(checkpoint['state_dict'])
+model.eval()
+
+image_path = 'C:/Users/shini/Downloads/my_dungeon.png'
+original = Image.open(image_path).convert('RGB')
+orig_size = original.size
+
+transform = transforms.Compose([transforms.Resize((512, 512)), transforms.ToTensor()])
+img_tensor = transform(original).unsqueeze(0).to(DEVICE)
+
+with torch.no_grad():
+    output = model(img_tensor)
+    prediction = output.argmax(dim=1).squeeze().cpu().numpy()
+
+mask_img = Image.fromarray(prediction.astype(np.uint8)).resize(orig_size, Image.NEAREST)
+mask = np.array(mask_img)
+mask_output = np.zeros_like(mask, dtype=np.uint8)
+mask_output[mask == 0] = 0
+mask_output[mask == 1] = 127
+mask_output[mask == 2] = 255
+Image.fromarray(mask_output).save('results/my_dungeon_mask.png')
+"
+
+# 2. Generate wall visualization (optional, for review)
+python mask_to_walls/mask_to_walls_v9.py --mask results/my_dungeon_mask.png --output results/my_dungeon_walls.png --grid-size 70
+
+# 3. Generate UVTT file for VTT import
+python mask_to_walls/walls_to_uvtt.py --mask results/my_dungeon_mask.png --image "C:/Users/shini/Downloads/my_dungeon.png" --grid-size 70 --output results/my_dungeon.uvtt
+
+
+================================================================================
+IMPORTING INTO FOUNDRY VTT
+================================================================================
+
+1. Install the "Universal Battlemap Importer" module in Foundry VTT
+2. In Foundry, go to: Scenes > Import Scene
+3. Select your .uvtt file
+4. The module will:
+   - Create a new scene with the embedded map image
+   - Import all walls (line_of_sight data)
+   - Import all doors (portals data)
+5. Adjust lighting and vision settings as needed
+
+
+================================================================================
+GRID SIZE GUIDE
+================================================================================
+
+The --grid-size parameter should match your map's grid spacing in pixels.
+
+Common values:
+- Watabou dungeons: 70px (default)
+- Dungeondraft exports: 70px or 140px (check export settings)
+- Hand-made maps: Measure grid spacing in pixels
+
+To measure grid size:
+1. Open map in image editor
+2. Measure distance (in pixels) between grid lines
+3. Use that value for --grid-size
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+"No module named unet_attention_aspp"
+-> Run from the UnetTinkering directory
+
+"CUDA out of memory"
+-> Change DEVICE = 'cpu' in the inference code
+
+"Walls don't line up with map"
+-> Adjust --grid-size to match your map's actual grid spacing
+
+"Too many small wall segments"
+-> Increase --epsilon (try 5-10 for cleaner output)
+
+"Walls have gaps at corners"
+-> The v9 script should handle this; if not, try increasing corner_merge_distance
+
+"Doors not detected"
+-> Model may not have detected doors; check the mask for gray (127) pixels
+-> Doors need clear rectangular regions in the training style
+
+"UVTT import fails"
+-> Verify the .uvtt file is valid JSON
+-> Try importing in a different VTT or checking module compatibility
+
+
+================================================================================
+QUALITY TIPS
+================================================================================
+
+For best results:
+- Use maps similar to training data (Watabou-style dungeon generators)
+- Ensure map has clear wall/floor contrast
+- Grid lines help the model understand scale
+- Higher resolution maps produce cleaner results
+
+Model works well on:
+- Watabou One Page Dungeon exports
+- Similar procedural dungeon generators
+- Clean black-and-white dungeon maps
+
+Model may struggle with:
+- Hand-drawn maps with irregular styles
+- Heavily decorated or textured maps
+- Maps with unusual color schemes
+- Very complex or detailed architecture
+
+
+================================================================================
+FILE LOCATIONS
+================================================================================
+
+Model checkpoint:
+  saved_models_3class/3class_aten_multi_1450.pth.tar
+
+Wall extraction scripts:
+  mask_to_walls/mask_to_walls_v9.py  (latest version)
+  mask_to_walls/walls_to_uvtt.py     (UVTT conversion)
+
+Output directory:
+  results/
+
+Documentation:
+  Text_Files/uvtt_format_specification.txt  (UVTT format details)
+  Text_Files/mask_to_walls_usage.txt        (wall extraction details)

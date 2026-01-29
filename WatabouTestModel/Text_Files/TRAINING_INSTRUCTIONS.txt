@@ -1,0 +1,286 @@
+UNET TRAINING INSTRUCTIONS - Watabou Dungeon Wall Detection
+============================================================
+
+OVERVIEW
+--------
+This guide explains how to train a U-Net model to detect playable areas in Watabou
+dungeon maps. The model learns to segment rooms, hallways, and doors from walls.
+
+
+QUICK START (Current 10-Dungeon Training)
+------------------------------------------
+The dataset is already prepared with 8 training and 2 validation dungeons.
+
+1. Start training:
+   python train.py
+
+2. Monitor progress:
+   - Training progress shows in terminal with loss values
+   - Validation accuracy and Dice score printed after each epoch
+   - Checkpoints saved to saved_models/ after each epoch
+   - Predictions saved to saved_predictions/ for visualization
+
+3. Training takes approximately:
+   - With GPU (CUDA): ~5-10 minutes for 20 epochs
+   - With CPU: ~30-60 minutes for 20 epochs
+
+
+FULL WORKFLOW (For Larger Datasets)
+------------------------------------
+
+STEP 1: Generate More Training Data
+-----------------------------------
+1. Generate dungeons:
+   - Visit: https://watabou.itch.io/one-page-dungeon
+   - Generate dungeons you like
+   - Right-click → "Export PNG" (use default 70px grid)
+   - Right-click → "Export JSON"
+   - Save both to a folder (e.g., C:\Users\shini\Downloads\watabou_exports)
+
+2. Generate masks:
+   python generate_foundry_masks.py "C:\path\to\exports" --debug --output data/watabou_final
+
+3. Verify masks:
+   - Check data/watabou_final/debug/ folder
+   - Green overlays should align perfectly with dungeon floors
+
+STEP 2: Prepare Dataset
+------------------------
+1. Copy data to raw directory:
+   cp data/watabou_final/images/* data/raw/images/
+   cp data/watabou_final/masks/* data/raw/masks/
+
+2. Split into train/val sets:
+   python prepare_dataset.py --split
+
+   Optional: Change train/val split ratio:
+   python prepare_dataset.py --split --train-split 0.9  # 90% train, 10% val
+
+3. Verify split:
+   - Check data/train_images/ and data/val_images/
+   - Should have images and matching masks in corresponding directories
+
+STEP 3: Configure Training
+---------------------------
+Edit train.py to adjust hyperparameters:
+
+# Key parameters (lines 14-22):
+LEARNING_RATE = 1e-4        # Lower = slower but more stable
+BATCH_SIZE = 16             # Reduce if out of memory (try 8, 4, 2)
+NUM_EPOCHS = 20             # More epochs = longer training
+IMAGE_HEIGHT = 256          # Input image size (must be divisible by 16)
+IMAGE_WIDTH = 256           # Keep square for best results
+NUM_WORKERS = 2             # Increase for faster data loading (if CPU allows)
+
+For larger datasets (100+ images):
+- Increase NUM_EPOCHS to 50-100
+- Consider adding learning rate scheduling
+- Monitor for overfitting (train accuracy >> val accuracy)
+
+For smaller datasets (10-20 images):
+- Use data augmentation (already enabled)
+- Train for fewer epochs (10-20)
+- Watch for overfitting closely
+
+STEP 4: Train Model
+-------------------
+python train.py
+
+Output shows:
+- Training on device: cuda or cpu
+- Number of training/validation samples
+- Model parameters count
+- Progress bar with loss per batch
+- Validation accuracy and Dice score per epoch
+
+Training saves:
+- Checkpoints: saved_models/checkpoint_epoch_X.pth.tar
+- Predictions: saved_predictions/ (visualizations of model output)
+
+STEP 5: Resume Training (Optional)
+-----------------------------------
+To continue from a checkpoint:
+
+1. Edit train.py, line 22:
+   LOAD_MODEL = True
+
+2. Ensure checkpoint exists:
+   saved_models/checkpoint.pth.tar
+
+3. Run training:
+   python train.py
+
+STEP 6: Evaluate Results
+-------------------------
+1. Check validation metrics:
+   - Accuracy: Percentage of correctly classified pixels
+   - Dice Score: Overlap between prediction and ground truth (0-1, higher is better)
+   - Target: Dice > 0.90 for good performance
+
+2. Visual inspection:
+   - Check saved_predictions/ folder
+   - Compare predicted masks with ground truth
+   - Look for:
+     * Are rooms correctly identified?
+     * Are hallways included?
+     * Are walls properly separated?
+
+3. Common issues:
+   - Low Dice (<0.70): Need more epochs or data
+   - Overfitting (train >> val): Need more data or regularization
+   - Blurry predictions: Try smaller learning rate
+
+
+HYPERPARAMETER TUNING GUIDE
+----------------------------
+
+Learning Rate:
+- Too high: Loss oscillates, doesn't converge
+- Too low: Training very slow, gets stuck
+- Sweet spot: 1e-4 to 1e-3
+- Try: 1e-4, 5e-4, 1e-3
+
+Batch Size:
+- Larger: Faster training, more stable gradients, needs more memory
+- Smaller: Slower, noisier gradients, less memory
+- Try: 2, 4, 8, 16 (powers of 2)
+- Limited by GPU memory
+
+Image Size:
+- Larger: More detail, slower training, more memory
+- Smaller: Faster, less detail, less memory
+- Must be divisible by 16 (U-Net requirement)
+- Try: 128, 256, 512
+
+Epochs:
+- Too few: Underfitting (poor performance)
+- Too many: Overfitting (good train, poor val)
+- Monitor val Dice score - stop when it plateaus
+
+
+UNDERSTANDING OUTPUT
+--------------------
+
+During Training:
+Training: 100%|████████| 8/8 [00:05<00:00,  1.45it/s, loss=0.234]
+
+- 8/8: Processed 8 batches
+- 1.45it/s: 1.45 iterations per second
+- loss=0.234: Current batch loss (lower is better)
+
+After Each Epoch:
+Validation Accuracy: 94.23%
+Validation Dice Score: 0.8956
+
+- Accuracy: % of pixels correctly classified
+- Dice: Overlap metric (0=no overlap, 1=perfect)
+
+
+TROUBLESHOOTING
+---------------
+
+Out of Memory Error:
+- Reduce BATCH_SIZE (try 8, 4, or 2)
+- Reduce IMAGE_HEIGHT and IMAGE_WIDTH
+- Close other applications
+
+Training Very Slow:
+- Check DEVICE - should be "cuda" if you have GPU
+- Increase NUM_WORKERS (if CPU allows)
+- Reduce IMAGE_HEIGHT and IMAGE_WIDTH
+
+Poor Results (Dice < 0.70):
+- Train for more epochs
+- Generate more training data
+- Check if masks are correctly aligned (see debug overlays)
+- Verify masks are binary (0 and 255 only)
+
+Model Not Improving:
+- Check if dataset is too small (need 20+ images minimum)
+- Verify train/val split is reasonable
+- Try different learning rate
+- Check for data issues (misaligned masks)
+
+
+FILE STRUCTURE
+--------------
+UnetTinkering/
+├── train.py                          # Main training script
+├── unet_model.py                     # U-Net architecture
+├── dataset.py                        # Data loading and augmentation
+├── utils.py                          # Helper functions
+├── prepare_dataset.py                # Dataset preparation
+├── generate_foundry_masks.py         # Mask generation from Watabou
+├── TRAINING_INSTRUCTIONS.txt         # This file
+├── MASK_GENERATION_INSTRUCTIONS.txt  # How to generate masks
+├── data/
+│   ├── raw/                          # Original data before splitting
+│   │   ├── images/                   # Copy Watabou PNGs here
+│   │   └── masks/                    # Copy generated masks here
+│   ├── train_images/                 # Training images (auto-generated)
+│   ├── train_masks/                  # Training masks (auto-generated)
+│   ├── val_images/                   # Validation images (auto-generated)
+│   ├── val_masks/                    # Validation masks (auto-generated)
+│   └── watabou_final/                # Generated masks from Watabou
+│       ├── images/                   # Original Watabou exports
+│       ├── masks/                    # Generated binary masks
+│       └── debug/                    # Alignment verification overlays
+├── saved_models/                     # Training checkpoints
+└── saved_predictions/                # Validation predictions
+
+
+DATASET REQUIREMENTS
+--------------------
+Minimum: 10-20 dungeon pairs (PNG + JSON)
+Recommended: 50-100 dungeon pairs
+Ideal: 200+ dungeon pairs
+
+Quality over quantity:
+- Ensure all masks are perfectly aligned
+- Check debug overlays before training
+- Remove any problematic dungeons
+- Variety in dungeon layouts helps generalization
+
+
+EXPECTED TIMELINE
+-----------------
+With 10 dungeons:
+- Data generation: 5 minutes
+- Dataset preparation: 1 minute
+- Training (20 epochs): 5-10 minutes (GPU) or 30-60 minutes (CPU)
+- Total: ~15 minutes (GPU) or ~45 minutes (CPU)
+
+With 100 dungeons:
+- Data generation: 30 minutes
+- Dataset preparation: 2 minutes
+- Training (50 epochs): 30-60 minutes (GPU) or 4-6 hours (CPU)
+- Total: ~1 hour (GPU) or ~5 hours (CPU)
+
+
+NEXT STEPS AFTER TRAINING
+--------------------------
+1. Use the trained model:
+   python inference.py --image path/to/dungeon.png --model saved_models/checkpoint_epoch_20.pth.tar
+
+2. Generate more data:
+   - Export more Watabou dungeons
+   - Generate masks with generate_foundry_masks.py
+   - Retrain with larger dataset
+
+3. Fine-tune:
+   - Set LOAD_MODEL = True
+   - Train for more epochs
+   - Adjust hyperparameters
+
+4. Experiment:
+   - Try different mask types (walls-only, centerlines)
+   - Test on real TTRPG maps (non-Watabou)
+   - Combine with other datasets
+
+
+ADDITIONAL RESOURCES
+--------------------
+- U-Net Paper: https://arxiv.org/abs/1505.04597
+- PyTorch Documentation: https://pytorch.org/docs/
+- Watabou Generator: https://watabou.itch.io/one-page-dungeon
+- Segmentation Metrics: https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient

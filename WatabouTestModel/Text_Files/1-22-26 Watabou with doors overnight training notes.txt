@@ -1,0 +1,53 @@
+OVERNIGHT TRAINING RUN - 1/22/26
+=================================
+
+DATASET:
+- Source: C:\Users\shini\UnetTinkering\data\watabou_final
+- Training samples: 105 dungeon maps
+- 3-class segmentation: walls (0), doors (127), floors (255)
+- Door types filtered: only types 1, 5, 6, 7 marked as doors
+- Grid size: 70px (hardcoded, some dungeons may have slight misalignment)
+
+TRAINING CONFIG:
+- Epochs: 1000 (fresh training, no checkpoint loaded)
+- Checkpoint save interval: Every 50 epochs
+- Learning rate: 1e-4
+- Batch size: 4
+- Image size: 512×512
+- Device: CUDA (8GB VRAM)
+- Optimizer: Adam
+- Loss: BCEWithLogitsLoss
+
+AUGMENTATIONS (AGGRESSIVE):
+- RandomRotate90: p=1.0 (always apply)
+- HorizontalFlip: p=0.7
+- VerticalFlip: p=0.7
+- RandomBrightnessContrast: brightness±25%, contrast±25%, p=0.6
+- ColorJitter: brightness/contrast/saturation±15%, hue±8%, p=0.4
+- GaussNoise: var_limit=(5, 20), p=0.2
+- Blur: blur_limit=3, p=0.2
+
+NOTES:
+- Computer will hibernate automatically when training completes
+- Checkpoints saved in: saved_models/checkpoint_epoch_X.pth.tar
+- Validation predictions saved in: saved_predictions/
+- Check validation Dice score progression to monitor 3-class performance
+
+TRAINING STARTED:
+- Successfully initialized: 105 train, 14 val samples
+- Model parameters: 31,037,633
+- Running in background, output logged to: training_output.log
+- Expected completion: ~12-18 hours (1000 epochs)
+
+TRAINING COMPLETED:
+- All 1000 epochs finished successfully
+- Final Validation Accuracy: 99.41%
+- Final Validation Dice Score: 0.9869
+- Checkpoints saved: every 50 epochs (50, 100, 150... 950, 1000)
+- Final checkpoint: saved_models/checkpoint_epoch_1000.pth.tar
+- Computer hibernation initiated after completion
+
+BEST MODEL:
+- Epoch 800: Validation Dice Score 0.9890 (HIGHEST)
+- Model file: saved_models/checkpoint_epoch_800.pth.tar
+- Use this checkpoint for inference/deployment

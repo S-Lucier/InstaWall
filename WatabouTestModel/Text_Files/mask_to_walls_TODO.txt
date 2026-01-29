@@ -1,0 +1,116 @@
+MASK TO WALLS - TODO IMPROVEMENTS
+==================================
+
+Current Status: mask_to_walls_simple_v1_GOOD.py works well!
+- 284 wall segments + 18 doors = 302 total
+- Walls from wall mask (eroded inward)
+- Doors from door mask with correct orientation
+- Doors snap to nearby walls
+
+Result: results/wall_test_simple.png
+
+
+IMPROVEMENTS NEEDED
+===================
+
+1. EXTEND WALL ENDPOINTS TO JUNCTIONS
+   Problem: Wall endpoints should perfectly overlap with junction points (yellow dots)
+   Solution:
+   - Identify all junction points (where multiple segments meet)
+   - For each wall endpoint near a junction, extend/adjust it to exactly match the junction coordinates
+   - This ensures walls connect seamlessly in Foundry
+   Priority: HIGH (required for Foundry)
+
+2. SPLIT WALLS AT DOOR INTERSECTIONS
+   Problem: Doors cross through wall segments, but walls aren't split at intersection points
+   Solution:
+   - For each door segment, find all wall segments it intersects
+   - Calculate the exact intersection point(s)
+   - Split each intersected wall into TWO segments with endpoints at the intersection
+   - This creates proper wall breaks at doorways
+   Example:
+   Before: Wall A-B, Door crosses at point C
+   After: Wall A-C, Wall C-B, Door
+   Priority: HIGH (do this LAST after other improvements)
+   Note: This will increase segment count significantly
+
+3. STRAIGHTEN NEAR-HORIZONTAL/VERTICAL WALLS (OPTIONAL)
+   Problem: Some walls (especially short ones) are slightly off-axis
+   Solution:
+   - For each wall segment, check if it's nearly horizontal or vertical
+   - If within a threshold (e.g., 5 degrees), snap it to perfectly horizontal/vertical
+   - Adjust one endpoint to maintain approximately the same length
+   Priority: LOW (optional, may as well if easy)
+   Threshold: If angle within 5° of 0°, 90°, 180°, or 270°, snap to that angle
+
+
+IMPLEMENTATION ORDER
+====================
+
+1. First: Extend wall endpoints to junctions
+2. Second: Straighten walls (optional)
+3. Last: Split walls at door intersections (will create many new segments)
+
+
+EXPECTED RESULTS
+================
+
+After all improvements:
+- Segment count will increase (walls split at doors: ~302 → ~350+)
+- All junctions perfectly aligned (no gaps)
+- Walls have proper breaks at doorways
+- Cleaner horizontal/vertical walls
+
+
+NOTES
+=====
+
+- mask_to_walls_simple_v1_GOOD.py is the baseline
+- Don't modify it, create new versions for improvements
+- Test each improvement separately before combining
+
+
+V2 STATUS (2026-01-24)
+======================
+
+Implemented:
+- Wall straightening (202 walls straightened)
+- Wall splitting at door intersections (36 splits, 284->320 walls)
+- Junction endpoint extension (found 284 junctions, 0 snapped - see issues)
+
+Issues Found in V2:
+1. Door segments extend 1-2px past wall split points (left=2px, right=1px)
+2. Room corners have slightly short walls that don't perfectly overlap
+3. Some walls slanted due to centroid averaging instead of proper extension
+
+
+V3 FIXES NEEDED
+===============
+
+1. SMART CORNER EXTENSION (replaces naive junction snapping)
+   Problem: Current approach finds existing junctions and snaps nearby endpoints.
+            But corners don't meet yet - they're close but separate points.
+   Solution:
+   - Find clusters of nearby endpoints (within ~10px) that should meet
+   - For each cluster, identify the wall directions
+   - For perpendicular walls (L-corners): extend both walls to their line intersection
+   - For parallel walls (shouldn't happen often): use midpoint
+   - For T-junctions: extend terminating wall to meet the continuous wall
+   Priority: HIGH
+
+2. PROPER ENDPOINT MERGING (replaces centroid averaging)
+   Problem: snap_endpoints() averages nearby points to centroid, pulling
+            endpoints off their wall lines and creating slanted walls.
+   Solution:
+   - Only use centroid for points within 1-2 pixels (already nearly identical)
+   - For points 3+ pixels apart, use line-line intersection
+   - Extend walls along their direction rather than moving endpoints arbitrarily
+   Priority: HIGH
+
+3. DOOR-WALL ALIGNMENT FIX
+   Problem: Door endpoints snapped to wall endpoints BEFORE wall straightening,
+            so after straightening, doors extend 1-2px past the split points.
+   Solution:
+   - After splitting walls at doors, recalculate door endpoints to match split points
+   - Or: snap door endpoints to nearest wall endpoints AFTER all wall processing
+   Priority: MEDIUM

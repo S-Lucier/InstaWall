@@ -1,0 +1,71 @@
+WATABOU DUNGEON MASK GENERATION - FINAL WORKING SOLUTION
+========================================================
+
+SCRIPT USED:
+-----------
+generate_foundry_masks.py
+
+
+HOW TO RUN:
+----------
+Alright
+
+
+COMMAND BREAKDOWN:
+-----------------
+- First argument: Directory containing PNG/JSON pairs from Watabou
+- --debug: Saves overlay visualizations to debug/ folder (optional)
+- --output: Where to save the results (optional, defaults to data/watabou_foundry)
+- --circular: Enable circular room rendering (default: True)
+- --no-circular: Disable circular rooms (makes all rectangular)
+
+
+ADDITIONAL OPTIONS:
+------------------
+# Without debug overlays (faster):
+python generate_foundry_masks.py "C:\Users\shini\Downloads\watabou_exports" --output data/watabou_final
+
+# Without circular room detection:
+python generate_foundry_masks.py "C:\Users\shini\Downloads\watabou_exports" --no-circular
+
+
+OUTPUT STRUCTURE:
+----------------
+data/watabou_final/
+├── images/              # Copy of original PNG files
+├── masks/               # Binary masks (white=playable, black=walls)
+└── debug/               # Green overlay visualizations (if --debug used)
+
+
+KEY FEATURES:
+------------
+- Uses Foundry VTT transformation logic (70px grid size)
+- Detects circular rooms via 'rotunda' property in JSON
+- Includes all rooms, hallways (1x1 rects), and doors
+- Perfect alignment with 18px offset correction
+- Masks match PNG dimensions exactly (no scaling needed)
+
+
+REQUIREMENTS FOR WATABOU EXPORTS:
+---------------------------------
+1. Go to https://watabou.itch.io/one-page-dungeon
+2. Generate a dungeon you like
+3. Right-click → "Export PNG" (use default 70px grid size)
+4. Right-click → "Export JSON"
+5. Save both with matching filenames (e.g., dungeon.png and dungeon.json)
+
+
+MASK CONVENTION (3-CLASS):
+--------------------------
+- Black pixels (0) = Walls and exterior
+- Gray pixels (127) = Doors
+- White pixels (255) = Playable areas (rooms, hallways)
+
+
+FOR TRAINING:
+------------
+The masks are ready to use directly:
+- Same dimensions as PNGs (no resizing needed before training)
+- Perfect alignment (verified with debug overlays)
+- Resize both image and mask together when loading for training
+- Use Image.NEAREST interpolation when resizing masks to preserve binary values

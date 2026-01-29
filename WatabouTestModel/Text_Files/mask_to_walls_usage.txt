@@ -1,0 +1,214 @@
+MASK TO WALLS CONVERTER - USAGE GUIDE
+=====================================
+
+Script: mask_to_walls_test.py
+
+Purpose: Convert 3-class segmentation mask (walls/doors/floors) to VTT wall segments
+
+
+BASIC USAGE
+===========
+
+python mask_to_walls_test.py --mask path/to/mask.png --output visualization.png
+
+
+EXAMPLE RUNS
+============
+
+# Test on ground truth mask:
+python mask_to_walls_test.py \
+    --mask data/val_masks/abbey_of_the_moon_king.png \
+    --output results/wall_test_abbey.png
+
+# Test on model-generated mask:
+python mask_to_walls_test.py \
+    --mask results/3class_enhanced_test_processed_mask.png \
+    --output results/wall_test_model.png
+
+
+OUTPUT
+======
+
+Creates visualization showing:
+- BLUE lines: Regular walls
+- RED lines: Doors
+- YELLOW dots: Junction points (segment endpoints)
+
+Also prints statistics:
+- Number of wall/door segments extracted
+- Parameters used
+- Filtering results
+
+
+AUTOMATIC PARAMETERS
+====================
+
+By default, parameters auto-scale based on --grid-size (default: 70px):
+
+--grid-size 70 (Watabou default):
+    wall_offset: 5px         (Players see ~5px of wall texture)
+    thin_wall_threshold: 14px (Walls thinner than this get centerline)
+    epsilon: 3px             (Curve simplification detail)
+    snap_distance: 2px       (Endpoint merging radius)
+
+--grid-size 140 (high-res):
+    wall_offset: 11px
+    thin_wall_threshold: 28px
+    epsilon: 7px
+    snap_distance: 5px
+
+
+MANUAL PARAMETER OVERRIDE
+==========================
+
+python mask_to_walls_test.py \
+    --mask my_mask.png \
+    --output walls.png \
+    --wall-offset 8 \
+    --epsilon 5 \
+    --thin-wall-threshold 20 \
+    --snap-distance 4
+
+
+PARAMETER EXPLANATIONS
+======================
+
+--wall-offset (default: 5px at 70px grid)
+    How far walls are placed from mask boundary (inward).
+    Players see this much wall texture.
+    Higher = more visible wall, less playable space
+    Lower = less visible wall, more playable space
+
+--epsilon (default: 3px at 70px grid)
+    Curve simplification tolerance (Douglas-Peucker).
+    Lower = smoother curves, MORE wall segments (performance hit)
+    Higher = simpler curves, FEWER wall segments (better performance)
+
+    Examples at 70px grid:
+    - epsilon=2: Very detailed, ~100+ segments per room
+    - epsilon=3: Balanced (recommended)
+    - epsilon=5: Simplified, ~50 segments per room
+    - epsilon=10: Very simple, ~20 segments per room
+
+--thin-wall-threshold (default: 14px at 70px grid)
+    Walls thinner than this get a single centerline.
+    Walls thicker than this get offset boundaries.
+
+    Use case:
+    - Walls between two rooms: usually 1-5px thick → centerline
+    - Exterior walls/pillars: usually 10-30px thick → boundaries
+
+    Higher threshold = more walls treated as "thin" (centerline)
+    Lower threshold = more walls treated as "thick" (boundaries)
+
+--snap-distance (default: 2-3px at 70px grid)
+    Merge endpoints within this distance.
+    Prevents gaps where walls should connect.
+
+    Too low: Gaps in walls (light leaks through)
+    Too high: Walls incorrectly merge across doorways
+
+
+ALGORITHM DETAILS
+=================
+
+1. WALL EXTRACTION (Hybrid Approach):
+
+   a) Identify thin walls (between rooms):
+      - Use distance transform to measure wall thickness
+      - Walls < thin_wall_threshold → extract centerline via skeleton
+      - Result: Single wall down middle of thin walls
+
+   b) Identify thick walls (exterior/pillars):
+      - Erode floor mask by wall_offset pixels
+      - Find contours on eroded boundary
+      - Result: Walls offset inward, players see wall texture
+
+2. CURVE SIMPLIFICATION:
+   - Apply Douglas-Peucker algorithm
+   - Reduces point count while preserving shape
+   - Controlled by epsilon parameter
+
+3. DOOR EXTRACTION:
+   - Find door regions (mask value 127)
+   - Determine orientation (horizontal vs vertical)
+   - Create door wall segment at centroid
+   - Make slightly wider than doorway (door_width_mult=1.2)
+
+4. POST-PROCESSING:
+   - Filter tiny segments (< min_wall_length)
+   - Snap nearby endpoints together (within snap_distance)
+   - Classify as wall or door type
+
+5. VISUALIZATION:
+   - Draw blue lines for walls
+   - Draw red lines for doors
+   - Mark yellow dots at junctions
+
+
+TYPICAL RESULTS
+===============
+
+Watabou map (2100x3430, 70px grid):
+- Ground truth mask: ~667 wall segments, 18 doors
+- Model-generated: ~1600 wall segments, 18 doors
+  (More segments due to imperfect boundaries in predictions)
+
+Performance in Foundry:
+- <500 segments: Excellent performance
+- 500-1000 segments: Good performance
+- 1000-2000 segments: Acceptable (may lag on old machines)
+- >2000 segments: Consider increasing epsilon
+
+
+TUNING WORKFLOW
+================
+
+If output has too many wall segments (performance concern):
+1. Increase --epsilon (try 5, then 7, then 10)
+2. Increase --min-wall-length (filter more noise)
+
+If curves look jaggy/blocky:
+1. Decrease --epsilon (try 2 or 2.5)
+2. Accept more segments for smoother curves
+
+If walls have gaps:
+1. Increase --snap-distance (try 4 or 5)
+2. Check if thin_wall_threshold needs adjustment
+
+If walls overlap incorrectly:
+1. Decrease --snap-distance (try 1 or 2)
+
+If players can't see wall textures:
+1. Increase --wall-offset (try 8 or 10)
+
+If playable area too small:
+1. Decrease --wall-offset (try 3 or 4)
+
+
+CURRENT LIMITATIONS
+===================
+
+1. Curve validation disabled (validate_curves=False)
+   - Simplified curves might poke slightly into playable space
+   - Workaround: Use lower epsilon for tighter curves
+   - TODO: Implement proper subdivision algorithm
+
+2. No UVTT export yet
+   - Currently only creates visualization
+   - TODO: Add JSON export function
+
+3. No terrain walls/windows
+   - Only supports regular walls and doors
+   - TODO: Add support for additional wall types
+
+
+NEXT STEPS
+==========
+
+1. Implement UVTT JSON export
+2. Add proper curve validation (subdivide segments that cut into floor)
+3. Add support for terrain walls and windows
+4. Create GUI for parameter tuning
+5. Add batch processing for multiple maps
+6. Optimize for very large maps (>10000px)

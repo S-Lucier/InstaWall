@@ -1,0 +1,291 @@
+ENHANCED INFERENCE WITH POST-PROCESSING
+========================================
+
+This guide covers using inference_enhanced.py for better mask quality with post-processing.
+
+
+WHY USE ENHANCED INFERENCE?
+---------------------------
+The enhanced inference script addresses common issues:
+
+1. Grey/shaded floor areas being marked as walls
+   - Solution: Lower threshold (0.3 instead of 0.5)
+
+2. Small holes inside playable areas
+   - Solution: Morphological closing operation
+
+3. Noisy/speckled predictions
+   - Solution: Morphological opening + small object removal
+
+4. Interior walls/doorways not detected
+   - Solution: Lower threshold + post-processing
+
+
+BASIC USAGE:
+-----------
+# Standard enhanced inference with default post-processing
+python inference_enhanced.py --image path/to/dungeon.png --threshold 0.3 --output results/output.png
+
+# Disable post-processing (same as regular inference.py)
+python inference_enhanced.py --image path/to/dungeon.png --no-postprocess --output results/output.png
+
+
+POST-PROCESSING PARAMETERS:
+---------------------------
+
+1. --threshold (default: 0.5)
+   - Lower values (0.3-0.4) capture more playable area, better for grey floors
+   - Higher values (0.5-0.6) are more conservative, reduce false positives
+   - Recommended: 0.3 for Watabou dungeons with shaded floors
+
+2. --closing-size (default: 5)
+   - Fills holes and gaps in playable areas
+   - Higher values (7-10) fill larger holes
+   - Lower values (3-5) preserve more detail
+   - Set to 0 to disable
+
+3. --opening-size (default: 2)
+   - Removes small noise and specks
+   - Higher values (3-5) remove more noise but may erode edges
+   - Lower values (1-2) are gentler
+   - Set to 0 to disable
+
+4. --min-size (default: 50)
+   - Removes isolated regions smaller than this many pixels
+   - Higher values (100-200) remove more small objects
+   - Lower values (20-50) preserve smaller features
+   - Useful for removing stray pixels
+
+
+EXAMPLES:
+---------
+
+# Conservative post-processing (preserve detail)
+python inference_enhanced.py --image data/val_images/blackmist_manor.png \
+    --threshold 0.35 --closing-size 3 --opening-size 1 --min-size 30 \
+    --output results/conservative.png
+
+# Aggressive post-processing (smooth, clean masks)
+python inference_enhanced.py --image data/val_images/blackmist_manor.png \
+    --threshold 0.3 --closing-size 10 --opening-size 3 --min-size 150 \
+    --output results/aggressive.png
+
+# Recommended for Watabou dungeons
+python inference_enhanced.py --image data/val_images/blackmist_manor.png \
+    --threshold 0.3 --closing-size 7 --min-size 100 \
+    --output results/watabou_optimized.png
+
+# For maps with very grey floors
+python inference_enhanced.py --image path/to/grey_dungeon.png \
+    --threshold 0.25 --closing-size 8 --output results/grey_floors.png
+
+
+OUTPUT FILES:
+-------------
+When you run with --output results/dungeon.png, you get:
+
+1. results/dungeon.png
+   - 3-panel visualization: Original | Raw Prediction | Post-Processed
+
+2. results/dungeon_raw_mask.png
+   - Raw prediction before post-processing
+
+3. results/dungeon_processed_mask.png
+   - Final mask after post-processing
+   - Use this one for Foundry VTT or other tools
+
+
+TUNING TIPS:
+------------
+
+If masks have holes inside rooms:
+→ Increase --closing-size (try 7-10)
+
+If masks are too noisy/speckled:
+→ Increase --opening-size (try 3-5)
+→ Increase --min-size (try 100-200)
+
+If walls are being marked as playable:
+→ Increase --threshold (try 0.4-0.5)
+
+If playable areas are being marked as walls:
+→ Decrease --threshold (try 0.25-0.35)
+
+If narrow hallways are disappearing:
+→ Decrease --opening-size (try 0-1)
+→ Decrease --closing-size
+
+
+COMPARISON WITH STANDARD INFERENCE:
+-----------------------------------
+
+Standard inference.py:
+- Faster (no post-processing overhead)
+- No additional dependencies
+- Good for quick tests
+- Raw model output only
+
+Enhanced inference_enhanced.py:
+- Cleaner, more usable masks
+- Handles edge cases better
+- Multiple output formats
+- Recommended for production use
+- Requires scikit-image (already in requirements.txt)
+
+
+BATCH PROCESSING:
+-----------------
+Create a simple script for processing multiple dungeons:
+
+# process_all.bat (Windows)
+for %%f in (data\test_images\*.png) do (
+    python inference_enhanced.py --image %%f --threshold 0.3 --output results\%%~nf_enhanced.png
+)
+
+# process_all.sh (Linux/Mac)
+for f in data/test_images/*.png; do
+    filename=$(basename "$f" .png)
+    python inference_enhanced.py --image "$f" --threshold 0.3 --output "results/${filename}_enhanced.png"
+done
+
+
+TECHNICAL DETAILS:
+------------------
+The post-processing pipeline:
+
+1. Model prediction → sigmoid → threshold → binary mask
+2. Morphological closing (fills holes/gaps)
+3. Morphological opening (removes noise)
+4. Remove small objects (cleans isolated regions)
+5. Resize to original dimensions
+
+All operations preserve binary values (0 or 1, no grey areas).
+NEAREST interpolation used for resizing to maintain sharp edges.
+
+
+================================================================================
+USING THE 3-CLASS UNET MODEL (RECOMMENDED)
+================================================================================
+
+The newer 3-class model detects walls, doors, AND background separately.
+This is the recommended model for VTT wall/door extraction.
+
+MODEL INFORMATION:
+------------------
+Architecture: AttentionASPPUNet (Attention gates + ASPP bottleneck)
+Checkpoint: saved_models_3class/3class_aten_multi_1450.pth.tar
+Classes: 0=walls (black), 1=doors (gray/127), 2=background (white/255)
+
+
+BASIC INFERENCE:
+----------------
+Run from the UnetTinkering directory:
+
+python -c "
+import torch
+import numpy as np
+from PIL import Image
+from unet_attention_aspp import AttentionASPPUNet
+import torchvision.transforms as transforms
+
+# Setup
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+model = AttentionASPPUNet(in_channels=3, out_channels=3).to(DEVICE)
+checkpoint = torch.load('saved_models_3class/3class_aten_multi_1450.pth.tar',
+                        map_location=DEVICE, weights_only=False)
+model.load_state_dict(checkpoint['state_dict'])
+model.eval()
+
+# Load image (CHANGE THIS PATH)
+image_path = 'path/to/your/dungeon.png'
+original = Image.open(image_path).convert('RGB')
+orig_size = original.size
+
+# Preprocess
+transform = transforms.Compose([
+    transforms.Resize((512, 512)),
+    transforms.ToTensor(),
+])
+img_tensor = transform(original).unsqueeze(0).to(DEVICE)
+
+# Run inference
+with torch.no_grad():
+    output = model(img_tensor)
+    prediction = output.argmax(dim=1).squeeze().cpu().numpy()
+
+# Resize back to original
+mask_img = Image.fromarray(prediction.astype(np.uint8))
+mask_img = mask_img.resize(orig_size, Image.NEAREST)
+
+# Convert to standard mask format
+mask = np.array(mask_img)
+mask_output = np.zeros_like(mask, dtype=np.uint8)
+mask_output[mask == 0] = 0      # walls = black
+mask_output[mask == 1] = 127    # doors = gray
+mask_output[mask == 2] = 255    # background = white
+
+# Save
+Image.fromarray(mask_output).save('results/dungeon_mask.png')
+print('Mask saved!')
+"
+
+
+OUTPUT FORMAT:
+--------------
+The 3-class mask uses these pixel values:
+- 0 (black)   = Walls - solid obstacles blocking movement and vision
+- 127 (gray)  = Doors - can be opened/closed, block vision when closed
+- 255 (white) = Background - playable floor area
+
+This format is directly compatible with:
+- mask_to_walls_v9.py (wall segment extraction)
+- walls_to_uvtt.py (Universal VTT export)
+
+
+FULL PIPELINE TO VTT:
+---------------------
+# Step 1: Generate mask
+(run the inference code above)
+
+# Step 2: Extract walls and generate UVTT
+python mask_to_walls/walls_to_uvtt.py \
+    --mask results/dungeon_mask.png \
+    --image path/to/original/dungeon.png \
+    --grid-size 70 \
+    --output results/dungeon.uvtt
+
+# Step 3: Import dungeon.uvtt into Foundry VTT using Universal Battlemap Importer
+
+
+DIFFERENCES FROM BINARY MODEL:
+------------------------------
+Binary model (inference.py / inference_enhanced.py):
+- 2 classes: playable vs walls
+- Output: 0=walls, 255=playable
+- Simpler, faster
+- No door detection
+
+3-class model (AttentionASPPUNet):
+- 3 classes: walls, doors, background
+- Output: 0=walls, 127=doors, 255=background
+- More accurate wall boundaries
+- Detects doors for VTT portal placement
+- Recommended for production use
+
+
+WHEN TO USE WHICH:
+------------------
+Use 3-class model when:
+- Generating walls for VTT import
+- You need door detection
+- Maximum accuracy is required
+- Processing Watabou-style dungeons
+
+Use binary model when:
+- Quick visualization/testing
+- Simple wall/floor segmentation
+- Processing non-dungeon maps
+- Compatibility with older scripts
+
+
+See also: Text_Files/INFERENCE_INSTRUCTIONS.txt for complete pipeline documentation.

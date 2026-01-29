@@ -1,0 +1,262 @@
+U-NET DUNGEON WALL DETECTION - COMPLETE SOLUTION
+================================================
+
+OVERVIEW
+--------
+Successfully built a U-Net model that detects playable areas vs walls in TTRPG dungeon maps.
+Model trained on 54 Watabou dungeon exports with automatically generated masks.
+Final validation Dice score: 0.9849 (98.49% overlap with ground truth masks)
+
+
+WHAT'S INCLUDED
+---------------
+
+1. MASK GENERATION
+   File: generate_foundry_masks.py
+   - Converts Watabou JSON/PNG exports into training masks
+   - Uses Foundry VTT coordinate transformation logic
+   - Handles circular rooms, hallways, and doors
+   - See: MASK_GENERATION_INSTRUCTIONS.txt
+
+2. MODEL TRAINING
+   Files: train.py, unet_model.py, dataset.py, utils.py
+   - U-Net architecture optimized for 8GB VRAM
+   - 512×512 input with padding (preserves aspect ratio)
+   - Mixed precision training with AMP
+   - See: TRAINING_INSTRUCTIONS.txt
+
+3. INFERENCE (TWO OPTIONS)
+
+   A. Standard Inference (inference.py)
+      - Fast, simple predictions
+      - Good for quick tests
+      - Raw model output only
+
+   B. Enhanced Inference (inference_enhanced.py)
+      - Post-processing for cleaner masks
+      - Handles grey floors better
+      - Configurable parameters
+      - See: ENHANCED_INFERENCE_GUIDE.txt
+
+4. UTILITIES
+   - prepare_dataset.py: Split data into train/val
+   - compare_settings.py: Test different parameters side-by-side
+
+
+CURRENT MODEL PERFORMANCE
+--------------------------
+Model: watabou_models/54_image_512x512_padded.pth.tar
+- Training images: 54 Watabou dungeons
+- Validation images: 14 dungeons
+- Input size: 512×512 (padded to preserve aspect ratio)
+- Dice score: 0.9849
+- Accuracy: ~98.3%
+
+Known limitations:
+- Grey/shaded floors sometimes marked as walls → Fixed with threshold=0.3
+- Interior walls occasionally missed → Fixed with enhanced post-processing
+- Works best on Watabou-style dungeons (training data)
+
+
+RECOMMENDED WORKFLOW
+--------------------
+
+For new Watabou dungeons:
+1. Export PNG + JSON from Watabou (70px grid)
+2. Run: python inference_enhanced.py --image dungeon.png --threshold 0.3 --output results/dungeon.png
+
+For custom tuning:
+1. Run: python compare_settings.py --image dungeon.png --output comparison.png
+2. Review the comparison to choose best settings
+3. Use those settings with inference_enhanced.py
+
+For batch processing:
+- See batch processing examples in ENHANCED_INFERENCE_GUIDE.txt
+
+
+KEY PARAMETERS EXPLAINED
+-------------------------
+
+Threshold (--threshold):
+- Controls sensitivity: lower = more playable area detected
+- Default: 0.5
+- Recommended for Watabou: 0.3 (handles grey floors better)
+- Range: 0.2-0.6
+
+Closing Size (--closing-size):
+- Fills holes and gaps inside rooms
+- Default: 5
+- For bigger holes: 7-10
+- For preserving detail: 3-5
+- Disable: 0
+
+Opening Size (--opening-size):
+- Removes noise and small specks
+- Default: 2
+- For more cleaning: 3-5
+- For less erosion: 1
+- Disable: 0
+
+Min Size (--min-size):
+- Removes isolated regions smaller than N pixels
+- Default: 50
+- For aggressive cleaning: 100-200
+- For preserving small features: 20-50
+
+
+FILES AND DIRECTORIES
+---------------------
+
+Training Data:
+  data/train_images/     - Training dungeon PNGs
+  data/train_masks/      - Training ground truth masks
+  data/val_images/       - Validation dungeon PNGs
+  data/val_masks/        - Validation ground truth masks
+
+Raw Data (for mask generation):
+  data/raw/images/       - Original Watabou PNG exports
+  data/raw/masks/        - Original Watabou JSON files
+
+Models:
+  saved_models/          - Training checkpoints (automatic)
+  watabou_models/        - Archived final models
+    ├── 10_image_prelim_model.pth.tar (early test model)
+    └── 54_image_512x512_padded.pth.tar (current best model)
+
+Results:
+  results/               - Inference outputs
+  saved_predictions/     - Validation predictions from training
+
+
+QUICK REFERENCE COMMANDS
+-------------------------
+
+# Generate masks from new Watabou exports
+python generate_foundry_masks.py "C:\path\to\watabou_exports" --output data/new_batch
+
+# Prepare dataset for training
+python prepare_dataset.py --input data/new_batch --train-ratio 0.8
+
+# Train model
+python train.py
+
+# Standard inference
+python inference.py --image dungeon.png --output results/output.png
+
+# Enhanced inference (recommended)
+python inference_enhanced.py --image dungeon.png --threshold 0.3 --output results/output.png
+
+# Compare settings
+python compare_settings.py --image dungeon.png --output comparison.png
+
+# Check validation accuracy
+(Run during training, or check saved_predictions/ folder)
+
+
+NEXT STEPS / IMPROVEMENTS
+--------------------------
+
+To improve the model further:
+
+1. Add more training data
+   - Export more Watabou dungeons
+   - Include dungeons with different styles/sizes
+   - Current: 54 images → Target: 100-200 images
+
+2. Train on other map types
+   - Hand-drawn maps
+   - Scanned/photographed maps
+   - Other generators (donjon, etc.)
+   - Would need manual mask creation or different mask generator
+
+3. Fine-tune hyperparameters
+   - Experiment with different augmentation
+   - Try different loss functions (Focal loss, Dice loss)
+   - Adjust learning rate schedule
+
+4. Model architecture changes
+   - Try deeper U-Net (more layers)
+   - Experiment with attention mechanisms
+   - Test other architectures (DeepLabV3+, SegFormer)
+
+
+TROUBLESHOOTING
+---------------
+
+Model predictions are too conservative:
+→ Lower threshold (try 0.3-0.4)
+→ Increase closing size
+
+Model predictions are too liberal:
+→ Raise threshold (try 0.5-0.6)
+→ Increase opening size
+
+Masks have holes inside rooms:
+→ Increase closing size (7-10)
+→ Use enhanced inference
+
+Masks are noisy/speckled:
+→ Increase opening size (3-5)
+→ Increase min-size (100-200)
+
+Training is slow:
+→ Already optimized for 8GB VRAM
+→ Reduce batch size if OOM errors occur
+→ Ensure CUDA is being used (check "Training on device: cuda")
+
+Inference output doesn't match input size:
+→ This is fixed in current version
+→ Predictions are automatically resized to original dimensions
+
+
+DEPENDENCIES
+------------
+All dependencies listed in requirements.txt:
+- torch>=2.0.0 (PyTorch with CUDA support)
+- torchvision>=0.15.0
+- numpy>=1.24.0
+- Pillow>=9.5.0
+- tqdm>=4.65.0
+- matplotlib>=3.7.0
+- albumentations>=1.3.0
+- scipy>=1.11.0
+- scikit-image>=0.21.0
+
+Install: pip install -r requirements.txt
+
+
+TECHNICAL NOTES
+---------------
+
+Model Architecture:
+- U-Net with skip connections
+- Input: 3 channels (RGB)
+- Output: 1 channel (binary segmentation)
+- ~31M parameters
+
+Training Configuration:
+- Optimizer: Adam (lr=1e-4)
+- Loss: BCEWithLogitsLoss
+- Mixed precision: Enabled (AMP)
+- Batch size: 4 (512×512)
+- Epochs: 20
+- Data augmentation: Rotation, flips, padding
+
+Mask Convention:
+- White (255) = Playable areas
+- Black (0) = Walls and exterior
+- Binary only, no grey values
+
+
+CREDITS & REFERENCES
+--------------------
+
+Watabou One-Page Dungeon Generator:
+https://watabou.itch.io/one-page-dungeon
+
+Foundry VTT One-Page Parser Module:
+https://github.com/TarkanAl-Kazily/one-page-parser
+
+U-Net Paper:
+Ronneberger et al., "U-Net: Convolutional Networks for Biomedical Image Segmentation"
+https://arxiv.org/abs/1505.04597

@@ -1,0 +1,75 @@
+3-CLASS MODEL VERIFICATION
+==========================
+
+Created: watabou_prior_attempts/train_3class.py
+
+CONFIRMED: This is a PROPER 3-class segmentation model
+
+✓ MODEL ARCHITECTURE
+--------------------
+Line 137: model = UNet(in_channels=3, out_channels=3).to(DEVICE)
+- Input: 3 channels (RGB)
+- Output: 3 channels (walls, doors, floors)
+- Output shape: (N, 3, H, W) - three probability maps
+
+✓ LOSS FUNCTION
+---------------
+Line 140: loss_fn = nn.CrossEntropyLoss()
+- Correct for multi-class segmentation
+- Expects: predictions (N, C, H, W), targets (N, H, W)
+- Applies softmax internally + negative log likelihood
+
+✓ DATASET
+---------
+Lines 34-67: ThreeClassSegmentationDataset
+- Maps pixel values to integer class indices:
+  * 0 (black) → 0 (walls)
+  * 127 (gray) → 1 (doors)
+  * 255 (white) → 2 (floors)
+- Returns mask as int64/long (required for CrossEntropyLoss)
+- NO normalization to [0,1] on masks (stays as class indices)
+
+✓ TRAINING LOOP
+---------------
+Lines 70-91: train_one_epoch()
+- Predictions shape: (N, 3, H, W)
+- Targets shape: (N, H, W) - no unsqueeze
+- Loss calculation: loss_fn(predictions, targets)
+- Correct tensor shapes for CrossEntropyLoss
+
+✓ VALIDATION
+------------
+Lines 94-128: check_accuracy_3class()
+- Line 108: preds = torch.argmax(preds, dim=1)
+  * Converts (N, 3, H, W) → (N, H, W) with class indices
+- Calculates per-class Dice scores (walls, doors, floors)
+- Returns average Dice across all classes
+
+✓ OUTPUT DIRECTORIES
+--------------------
+- saved_models_3class/ (separate from binary model)
+- saved_predictions_3class/
+
+
+COMPARISON: Binary vs 3-Class
+==============================
+
+BINARY (train_binary.py):
+- out_channels=1
+- BCEWithLogitsLoss
+- Masks normalized to [0, 1]
+- Sigmoid + threshold for prediction
+- Two classes only
+
+3-CLASS (train_3class.py):
+- out_channels=3
+- CrossEntropyLoss
+- Masks as integer indices [0, 1, 2]
+- Softmax + argmax for prediction
+- Three distinct classes
+
+
+READY TO TRAIN
+==============
+File: watabou_prior_attempts/train_3class.py
+Command: python watabou_prior_attempts/train_3class.py

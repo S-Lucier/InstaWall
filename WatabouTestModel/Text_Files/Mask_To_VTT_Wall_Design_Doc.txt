@@ -1,0 +1,39 @@
+Goal: Take output mask and image from model and convert it into Universal VTT file format, that can be loaded into programs
+such as foundry via already existing software to load UVTT files into however foundy stores map walls.
+
+Walls in foundry are handled as a single line with endpoints on each side. Those endpoints can snap onto each other
+so the walls connect seamlessly. On straight sections, one wall object down the entire length is fine, but on curved
+objects, some aproximation of the curve will be needed - the centeral challenge there is making an aproximation that
+uses the right amount of walls to follow the curve - too many hurts performence, too few looks bad (ideally this is
+a tunable parameter so the user can pick according to their machine and how big the map is) - and we really don't want
+walls jutting out of the curve into what's supposed to be playable space.
+
+Walls will need to overlap and snap onto each other so there aren't any gaps, we need some sort of fuzzing so walls
+that end close by can connect.
+
+Doors will hook into the walls on either side of them, and ideally the door wall is a bit wider than the doorway
+(this makes it easier for player characters to move their characters through the doorway).
+This can probably be a tunable parameter?
+
+Wall types:
+Ordinary walls: Default foundry wall object
+Doorss: Foundry wall object marked as a door, meaning players can click to open it. AFAIK they're treated the same
+as doors by the canvas and UVTT files, same placement rules and all
+
+Terrain walls: (special foundry wall type that allows players to see through one layer of wall, but not two, used for
+marking columns and boulders and other stuff you can see but not see past.
+
+Windows: Type of wall you can see through, usually just in line with other walls as part of a building.
+
+
+Major strech goals, probably won't ever do:
+
+Open Doors: Difficult case as how doors are drawn open on a map will vary by artist, and because the presense of an open
+door means the door wall has to be placed in the doorway - not on the location of the open door. I can mask both the
+door object as drawn on the map and the open doorway when making battlemap masks, so we have options on how to handle
+this
+
+
+
+
+
