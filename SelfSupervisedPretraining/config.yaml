@@ -1,0 +1,66 @@
+# Self-Supervised Pretraining Configuration
+# ==========================================
+
+# Data settings
+data:
+  image_size: 512
+  batch_size: 8
+  num_workers: 4
+  augment: true
+
+# Model architecture
+model:
+  features: [64, 128, 256, 512]  # Encoder feature sizes at each level
+  use_aspp: true                  # Use ASPP in bottleneck
+  num_permutations: 100           # Jigsaw permutation classes
+
+# Training settings
+training:
+  epochs: 100
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  scheduler: cosine              # cosine or step
+  warmup_epochs: 5
+  use_amp: true                  # Automatic mixed precision
+
+# Loss weights for multi-task learning
+# These control relative importance of each pretext task
+loss_weights:
+  edge: 0.3      # Edge prediction - teaches boundary detection
+  color: 0.2     # Colorization - teaches material differences
+  mae: 0.4       # Masked autoencoding - teaches spatial structure
+  jigsaw: 0.1    # Jigsaw puzzle - teaches spatial relationships
+
+# Task-specific settings
+tasks:
+  edge:
+    method: canny              # canny, multi_scale, or sobel
+    low_threshold: 50
+    high_threshold: 150
+    random_thresholds: true    # Vary thresholds for augmentation
+
+  colorization:
+    add_noise: true            # Add noise to grayscale input
+    noise_std: 0.02
+
+  mae:
+    patch_size: 32             # Size of masked patches
+    mask_ratio: 0.75           # Fraction of image to mask
+    mask_type: patch           # patch or block
+    variable_ratio: true       # Randomly vary mask ratio
+
+  jigsaw:
+    grid_size: 3               # 3x3 grid = 9 patches
+    add_gap: false             # Add gaps between patches
+
+# Checkpointing
+checkpointing:
+  save_every: 10               # Save checkpoint every N epochs
+  keep_last_n: 5               # Keep only last N checkpoints
+  save_best: true              # Save best model
+
+# Fine-tuning settings (for after pretraining)
+finetuning:
+  lr_encoder: 1e-5             # Lower LR for pretrained encoder
+  lr_decoder: 1e-4             # Higher LR for new decoder
+  freeze_encoder_epochs: 0     # Epochs to freeze encoder (0 = never freeze)

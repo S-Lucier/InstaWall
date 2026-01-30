@@ -43,6 +43,8 @@ wheels/
 WatabouTestModel/data/
 dataset/
 datasets/
+tempTestDataInput/
+tempTestDataOutput/
 
 # Model outputs
 saved_models/

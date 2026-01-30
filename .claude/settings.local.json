@@ -36,7 +36,11 @@
       "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0, r''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\Model Imports''\\); exec\\(open\\(r''C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\inference_3class_enhanced.py''\\).read\\(\\)\\)\" --image \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png\" --checkpoint \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\saved_models_3class\\\\3class_aten_multi_1450.pth.tar\" --output \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\test_output.png\")",
       "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\":*)",
       "Bash(\"C:\\\\Users\\\\shini\\\\InstaWall\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\inference_3class_enhanced.py\" --image \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\watabou_prior_attempts\\\\data\\\\watabou_training\\\\images\\\\chapel_of_supremus.png\" --checkpoint \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\saved_models_3class\\\\3class_aten_multi_1450.pth.tar\" --output \"C:\\\\Users\\\\shini\\\\InstaWall\\\\WatabouTestModel\\\\test_output.png\")",
-      "Bash(gh repo view:*)"
+      "Bash(gh repo view:*)",
+      "Bash(.venv\\\\Scripts\\\\python.exe:*)",
+      "Bash(C:/Users/shini/InstaWall/.venv/Scripts/python.exe:*)",
+      "Bash(dir:*)",
+      "Bash(timeout 5 .venv/Scripts/python.exe:*)"
     ]
   }
 }
