@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent / "Model Imports"))
+sys.path.insert(0, str(Path(__file__).parent / "model_imports"))
 
 import torch
 import numpy as np

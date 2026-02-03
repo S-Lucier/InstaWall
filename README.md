@@ -7,4 +7,4 @@ Next steps are to pre-train a model to learn general edge detection on a wide ar
 
 Some different art styles might need their own models, i.e. classic OSR monochrome maps.
 
-Apologies for the messy codebase (especially for the watabou only version), this project is in prototype stage and I haven't cleaned out all the old versions and such.
+Apologies for the messy codebase (especially for the watabou only version), this project is in prototype stage and I haven't cleaned out all the old versions and such. Everything to run the final Watabou model is in WatabouTestModel, along with final results.

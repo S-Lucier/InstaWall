@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / 'WatabouTestModel' / 'Model Imports'))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'WatabouTestModel' / 'model_imports'))
 
 from models.encoder import SharedEncoder, ASPP, DoubleConv
 
@@ -229,7 +229,7 @@ def main():
 
     print("\nModel ready for fine-tuning!")
     print("To train, integrate with your existing training loop from")
-    print("WatabouTestModel/Model Imports/train_3class_attention_multi_extended.py")
+    print("WatabouTestModel/model_imports/train_3class_attention_multi_extended.py")
 
     # Save model architecture for reference
     output_dir = Path(args.output_dir)
