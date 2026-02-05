@@ -70,8 +70,8 @@ class BattlemapDataset(Dataset):
 
         if self.augment:
             return A.Compose([
-                # Resize and crop
-                A.LongestMaxSize(max_size=self.image_size + 64),
+                # Resize and crop - use SmallestMaxSize to ensure both dims >= crop size
+                A.SmallestMaxSize(max_size=self.image_size + 64),
                 A.RandomCrop(self.image_size, self.image_size),
 
                 # Geometric augmentations
@@ -90,9 +90,9 @@ class BattlemapDataset(Dataset):
 
                 # Quality augmentations
                 A.OneOf([
-                    A.GaussNoise(var_limit=(5, 20), p=1.0),
+                    A.GaussNoise(std_range=(0.02, 0.1), p=1.0),
                     A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-                    A.ImageCompression(quality_lower=70, quality_upper=95, p=1.0),
+                    A.ImageCompression(quality_range=(70, 95), p=1.0),
                 ], p=0.3),
 
                 # Normalize and convert
@@ -160,7 +160,7 @@ class PretrainingDataset(Dataset):
         self.base_dataset = base_dataset
 
         # Import tasks here to avoid circular imports
-        from ..pretext_tasks import (
+        from pretext_tasks import (
             EdgePredictionTask,
             ColorizationTask,
             MAETask,

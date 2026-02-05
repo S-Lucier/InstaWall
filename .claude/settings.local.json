@@ -40,7 +40,11 @@
       "Bash(.venv\\\\Scripts\\\\python.exe:*)",
       "Bash(C:/Users/shini/InstaWall/.venv/Scripts/python.exe:*)",
       "Bash(dir:*)",
-      "Bash(timeout 5 .venv/Scripts/python.exe:*)"
+      "Bash(timeout 5 .venv/Scripts/python.exe:*)",
+      "Bash(tasklist:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(xxd:*)",
+      "Bash(pip show:*)"
     ]
   }
 }

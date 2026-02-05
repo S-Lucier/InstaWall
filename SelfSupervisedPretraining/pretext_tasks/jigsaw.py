@@ -13,6 +13,7 @@ The model learns global spatial structure by figuring out
 how pieces fit together.
 """
 
+import math
 import numpy as np
 import torch
 import itertools
@@ -68,7 +69,7 @@ def generate_diverse_permutations(num_positions, num_permutations=100, seed=42):
     permutations = [tuple(all_positions)]  # Start with identity
 
     # Generate many candidates
-    n_candidates = min(10000, np.math.factorial(num_positions))
+    n_candidates = min(10000, math.factorial(num_positions))
     candidates = []
     while len(candidates) < n_candidates:
         perm = tuple(np.random.permutation(all_positions))
@@ -96,10 +97,11 @@ def generate_diverse_permutations(num_positions, num_permutations=100, seed=42):
 
 
 # Pre-computed permutations for 3x3 grid (9 positions)
-PERMUTATIONS_3x3 = generate_diverse_permutations(9, 100, seed=42)
+# Using simple random permutations for faster import; diverse selection is too slow
+PERMUTATIONS_3x3 = generate_permutations(9, 100, seed=42)
 
 # Pre-computed permutations for 2x2 grid (4 positions) - easier task
-PERMUTATIONS_2x2 = generate_diverse_permutations(4, 24, seed=42)  # All 24 permutations
+PERMUTATIONS_2x2 = generate_permutations(4, 24, seed=42)  # All 24 permutations
 
 
 def split_into_grid(image, grid_size=3):
@@ -132,12 +134,13 @@ def split_into_grid(image, grid_size=3):
     return patches
 
 
-def reassemble_grid(patches, grid_size=3):
+def reassemble_grid(patches, grid_size=3, original_size=None):
     """Reassemble patches into an image.
 
     Args:
         patches: List of patch tensors (C, pH, pW)
         grid_size: Number of patches per side
+        original_size: Optional tuple (H, W) to pad result to original size
 
     Returns:
         Reassembled image tensor (C, H, W)
@@ -155,6 +158,14 @@ def reassemble_grid(patches, grid_size=3):
         i = idx // grid_size
         j = idx % grid_size
         image[:, i*patch_h:(i+1)*patch_h, j*patch_w:(j+1)*patch_w] = patch
+
+    # Pad to original size if needed
+    if original_size is not None:
+        orig_h, orig_w = original_size
+        if H < orig_h or W < orig_w:
+            padded = torch.zeros(C, orig_h, orig_w, dtype=patches[0].dtype)
+            padded[:, :H, :W] = image
+            image = padded
 
     return image
 
@@ -191,6 +202,9 @@ def generate_jigsaw_input(image, grid_size=3, permutations=None):
         else:
             permutations = generate_permutations(grid_size * grid_size)
 
+    # Get original size for padding back
+    _, orig_h, orig_w = image.shape
+
     # Split into patches
     patches = split_into_grid(image, grid_size)
 
@@ -201,8 +215,8 @@ def generate_jigsaw_input(image, grid_size=3, permutations=None):
     # Apply permutation
     shuffled_patches = apply_permutation(patches, perm)
 
-    # Reassemble
-    shuffled_image = reassemble_grid(shuffled_patches, grid_size)
+    # Reassemble with original size
+    shuffled_image = reassemble_grid(shuffled_patches, grid_size, original_size=(orig_h, orig_w))
 
     return shuffled_image, perm_idx
 

@@ -45,6 +45,8 @@ dataset/
 datasets/
 tempTestDataInput/
 tempTestDataOutput/
+pretraining_data/
+data/
 
 # Model outputs
 saved_models/

@@ -1,0 +1,511 @@
+"""
+Dataset for wall segmentation training.
+
+Loads battlemap images and their corresponding line segment masks,
+extracts tiles at consistent grid scale, and applies augmentations.
+"""
+
+import json
+import random
+from pathlib import Path
+from typing import Tuple, List, Dict, Optional
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+
+try:
+    import albumentations as A
+    from albumentations.pytorch import ToTensorV2
+    HAS_ALBUMENTATIONS = True
+except ImportError:
+    HAS_ALBUMENTATIONS = False
+    print("Warning: albumentations not installed. Using basic transforms.")
+
+from .tiling import TileExtractor
+
+
+class WallSegmentationDataset(Dataset):
+    """
+    Dataset for training wall segmentation model.
+
+    Loads battlemap images and their corresponding masks, extracts tiles
+    at consistent grid scale, and applies augmentations.
+
+    Expected directory structure:
+        image_dir/
+            MapName.jpg (or .png, .webp)
+        mask_dir/
+            MapName_mask_lines.png
+
+    Each mask file should have a corresponding metadata file or the grid size
+    should be provided per-sample.
+    """
+
+    def __init__(
+        self,
+        image_dir: str,
+        mask_dir: str,
+        metadata_file: Optional[str] = None,
+        tile_grid_cells: int = 8,
+        tile_size: int = 512,
+        tiles_per_image: int = 4,
+        mask_scale: int = 50,
+        augment: bool = True,
+        default_grid_size: int = 140,
+    ):
+        """
+        Args:
+            image_dir: Directory containing battlemap images
+            mask_dir: Directory containing mask files
+            metadata_file: Optional JSON file with per-image metadata (grid_size, etc.)
+            tile_grid_cells: Number of grid cells per tile
+            tile_size: Output tile size in pixels
+            tiles_per_image: Number of random tiles to extract per image per epoch
+            mask_scale: Scale factor used in mask files (class = value / scale)
+            augment: Whether to apply augmentations
+            default_grid_size: Default grid size if not in metadata
+        """
+        self.image_dir = Path(image_dir)
+        self.mask_dir = Path(mask_dir)
+        self.tile_grid_cells = tile_grid_cells
+        self.tile_size = tile_size
+        self.tiles_per_image = tiles_per_image
+        self.mask_scale = mask_scale
+        self.augment = augment
+        self.default_grid_size = default_grid_size
+
+        self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0)
+
+        # Load metadata if provided
+        self.metadata = {}
+        if metadata_file and Path(metadata_file).exists():
+            with open(metadata_file) as f:
+                self.metadata = json.load(f)
+
+        # Find image-mask pairs
+        self.samples = self._find_samples()
+        print(f"Found {len(self.samples)} image-mask pairs")
+
+        # Build augmentation pipeline
+        self.transform = self._build_transform()
+
+    def _normalize_name(self, name: str) -> str:
+        """Normalize a name for fuzzy matching."""
+        # Convert to lowercase
+        name = name.lower()
+        # Replace separators with nothing
+        name = name.replace('_', '').replace('-', '').replace(' ', '')
+        # Remove common articles that might be missing
+        name = name.replace('the', '').replace('of', '')
+        return name
+
+    def _find_samples(self) -> List[Dict]:
+        """Find matching image-mask pairs."""
+        samples = []
+        extensions = ['.jpg', '.jpeg', '.png', '.webp']
+
+        # Get all image files
+        image_files = []
+        for ext in extensions:
+            image_files.extend(self.image_dir.glob(f'*{ext}'))
+            image_files.extend(self.image_dir.glob(f'*{ext.upper()}'))
+
+        # Filter out mask/viz files
+        image_files = [f for f in image_files if '_mask' not in f.stem and '_viz' not in f.stem]
+
+        # Build lookup by normalized name
+        image_lookup = {}
+        for img_path in image_files:
+            norm_name = self._normalize_name(img_path.stem)
+            image_lookup[norm_name] = img_path
+
+        # Get all mask files
+        mask_files = list(self.mask_dir.glob('*_mask_lines.png'))
+
+        for mask_path in mask_files:
+            # Extract base name (remove _mask_lines.png suffix)
+            base_name = mask_path.stem.replace('_mask_lines', '')
+            norm_name = self._normalize_name(base_name)
+
+            # Try to find corresponding image
+            image_path = image_lookup.get(norm_name)
+
+            if image_path is None:
+                # Try partial matching
+                for img_norm, img_path in image_lookup.items():
+                    if norm_name in img_norm or img_norm in norm_name:
+                        image_path = img_path
+                        break
+
+            if image_path is None:
+                print(f"Warning: No image found for mask {mask_path.name}")
+                continue
+
+            # Get grid size from metadata or use default
+            grid_size = self.metadata.get(base_name, {}).get('grid_size', self.default_grid_size)
+
+            samples.append({
+                'image_path': str(image_path),
+                'mask_path': str(mask_path),
+                'name': base_name,
+                'grid_size': grid_size,
+            })
+
+        return samples
+
+    def _build_transform(self):
+        """Build augmentation pipeline."""
+        if not HAS_ALBUMENTATIONS:
+            return None
+
+        if self.augment:
+            return A.Compose([
+                # Geometric augmentations (applied to both image and mask)
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomRotate90(p=0.5),
+
+                # Color augmentations (image only)
+                A.ColorJitter(
+                    brightness=0.2,
+                    contrast=0.2,
+                    saturation=0.2,
+                    hue=0.05,
+                    p=0.3
+                ),
+
+                # Quality augmentations (image only)
+                A.OneOf([
+                    A.GaussNoise(std_range=(0.02, 0.05), p=1.0),
+                    A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+                ], p=0.2),
+
+                # Normalize and convert
+                A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
+                ToTensorV2()
+            ])
+        else:
+            return A.Compose([
+                A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
+                ToTensorV2()
+            ])
+
+    def __len__(self):
+        return len(self.samples) * self.tiles_per_image
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """
+        Get a single training sample (tile).
+
+        Returns:
+            Dict with:
+                'image': Image tile tensor (C, H, W)
+                'mask': Mask tile tensor (H, W) with class indices
+                'name': Sample name for debugging
+        """
+        # Determine which image and which tile
+        sample_idx = idx // self.tiles_per_image
+        sample = self.samples[sample_idx]
+
+        # Load image and mask
+        try:
+            image = np.array(Image.open(sample['image_path']).convert('RGB'))
+            mask = np.array(Image.open(sample['mask_path']))
+        except Exception as e:
+            print(f"Error loading {sample['name']}: {e}")
+            return self.__getitem__(random.randint(0, len(self) - 1))
+
+        # Convert mask values to class indices
+        mask = mask // self.mask_scale
+
+        grid_size = sample['grid_size']
+
+        # Extract a random tile
+        tile_positions = self.extractor.compute_tile_positions(
+            image.shape[1], image.shape[0], grid_size
+        )
+
+        if not tile_positions:
+            print(f"Warning: No valid tiles for {sample['name']}")
+            return self.__getitem__(random.randint(0, len(self) - 1))
+
+        # Select random tile position
+        tile_info = random.choice(tile_positions)
+
+        # Extract tiles
+        image_tile = self.extractor.extract_tile(image, tile_info, grid_size)
+        mask_tile = self.extractor.extract_tile(mask, tile_info, grid_size)
+
+        # Apply augmentations
+        if self.transform is not None:
+            transformed = self.transform(image=image_tile, mask=mask_tile)
+            image_tensor = transformed['image']
+            mask_tensor = transformed['mask']
+            # ToTensorV2 may return tensor or numpy depending on version
+            if isinstance(mask_tensor, np.ndarray):
+                mask_tensor = torch.from_numpy(mask_tensor)
+            mask_tensor = mask_tensor.long()
+        else:
+            # Basic fallback
+            image_tensor = torch.from_numpy(image_tile.transpose(2, 0, 1)).float() / 255.0
+            mask_tensor = torch.from_numpy(mask_tile).long()
+
+        return {
+            'image': image_tensor,
+            'mask': mask_tensor,
+            'name': sample['name'],
+        }
+
+
+class ValidationDataset(Dataset):
+    """
+    Validation dataset that extracts ALL tiles from each image.
+
+    Used for evaluating model performance on full images with tiled inference.
+    """
+
+    def __init__(
+        self,
+        image_dir: str,
+        mask_dir: str,
+        metadata_file: Optional[str] = None,
+        tile_grid_cells: int = 8,
+        tile_size: int = 512,
+        overlap: float = 0.5,
+        mask_scale: int = 50,
+        default_grid_size: int = 140,
+    ):
+        """
+        Args:
+            image_dir: Directory containing battlemap images
+            mask_dir: Directory containing mask files
+            metadata_file: Optional JSON file with per-image metadata
+            tile_grid_cells: Number of grid cells per tile
+            tile_size: Output tile size in pixels
+            overlap: Overlap ratio for tiling
+            mask_scale: Scale factor used in mask files
+            default_grid_size: Default grid size if not in metadata
+        """
+        self.image_dir = Path(image_dir)
+        self.mask_dir = Path(mask_dir)
+        self.tile_grid_cells = tile_grid_cells
+        self.tile_size = tile_size
+        self.overlap = overlap
+        self.mask_scale = mask_scale
+        self.default_grid_size = default_grid_size
+
+        self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap)
+
+        # Load metadata
+        self.metadata = {}
+        if metadata_file and Path(metadata_file).exists():
+            with open(metadata_file) as f:
+                self.metadata = json.load(f)
+
+        # Find samples
+        self.samples = self._find_samples()
+
+        # Pre-compute all tiles
+        self.tiles = []
+        self._precompute_tiles()
+
+        print(f"Validation: {len(self.samples)} images, {len(self.tiles)} total tiles")
+
+    def _find_samples(self) -> List[Dict]:
+        """Find matching image-mask pairs."""
+        samples = []
+        extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        mask_files = list(self.mask_dir.glob('*_mask_lines.png'))
+
+        for mask_path in mask_files:
+            base_name = mask_path.stem.replace('_mask_lines', '')
+
+            image_path = None
+            for ext in extensions:
+                candidate = self.image_dir / f"{base_name}{ext}"
+                if candidate.exists():
+                    image_path = candidate
+                    break
+                candidate = self.image_dir / f"{base_name.replace('_', ' ')}{ext}"
+                if candidate.exists():
+                    image_path = candidate
+                    break
+
+            if image_path is None:
+                continue
+
+            grid_size = self.metadata.get(base_name, {}).get('grid_size', self.default_grid_size)
+
+            samples.append({
+                'image_path': str(image_path),
+                'mask_path': str(mask_path),
+                'name': base_name,
+                'grid_size': grid_size,
+            })
+
+        return samples
+
+    def _precompute_tiles(self):
+        """Pre-compute all tile positions for all images."""
+        for sample_idx, sample in enumerate(self.samples):
+            try:
+                image = Image.open(sample['image_path'])
+                w, h = image.size
+            except Exception as e:
+                print(f"Error loading {sample['name']}: {e}")
+                continue
+
+            tile_positions = self.extractor.compute_tile_positions(
+                w, h, sample['grid_size']
+            )
+
+            for tile_idx, tile_info in enumerate(tile_positions):
+                self.tiles.append({
+                    'sample_idx': sample_idx,
+                    'tile_info': tile_info,
+                    'tile_idx': tile_idx,
+                })
+
+    def __len__(self):
+        return len(self.tiles)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a single tile."""
+        tile_data = self.tiles[idx]
+        sample = self.samples[tile_data['sample_idx']]
+        tile_info = tile_data['tile_info']
+
+        # Load image and mask
+        image = np.array(Image.open(sample['image_path']).convert('RGB'))
+        mask = np.array(Image.open(sample['mask_path']))
+        mask = mask // self.mask_scale
+
+        grid_size = sample['grid_size']
+
+        # Extract tile
+        image_tile = self.extractor.extract_tile(image, tile_info, grid_size)
+        mask_tile = self.extractor.extract_tile(mask, tile_info, grid_size)
+
+        # Convert to tensors (no augmentation for validation)
+        image_tensor = torch.from_numpy(image_tile.transpose(2, 0, 1)).float() / 255.0
+        mask_tensor = torch.from_numpy(mask_tile).long()
+
+        return {
+            'image': image_tensor,
+            'mask': mask_tensor,
+            'name': sample['name'],
+            'sample_idx': tile_data['sample_idx'],
+            'tile_idx': tile_data['tile_idx'],
+        }
+
+
+def create_dataloader(
+    image_dir: str,
+    mask_dir: str,
+    batch_size: int = 8,
+    tile_grid_cells: int = 8,
+    tile_size: int = 512,
+    tiles_per_image: int = 4,
+    mask_scale: int = 50,
+    num_workers: int = 4,
+    augment: bool = True,
+    shuffle: bool = True,
+    metadata_file: Optional[str] = None,
+    default_grid_size: int = 140,
+) -> DataLoader:
+    """
+    Create a DataLoader for training.
+
+    Args:
+        image_dir: Directory containing battlemap images
+        mask_dir: Directory containing mask files
+        batch_size: Batch size
+        tile_grid_cells: Number of grid cells per tile
+        tile_size: Output tile size
+        tiles_per_image: Tiles to extract per image per epoch
+        mask_scale: Scale factor in mask files
+        num_workers: Data loading workers
+        augment: Apply augmentations
+        shuffle: Shuffle data
+        metadata_file: Optional metadata JSON
+        default_grid_size: Default grid size
+
+    Returns:
+        DataLoader
+    """
+    dataset = WallSegmentationDataset(
+        image_dir=image_dir,
+        mask_dir=mask_dir,
+        metadata_file=metadata_file,
+        tile_grid_cells=tile_grid_cells,
+        tile_size=tile_size,
+        tiles_per_image=tiles_per_image,
+        mask_scale=mask_scale,
+        augment=augment,
+        default_grid_size=default_grid_size,
+    )
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+
+if __name__ == "__main__":
+    # Test dataset
+    import sys
+
+    # Default paths
+    image_dir = "data/foundry_to_mask"
+    mask_dir = "data/foundry_to_mask/line_masks"
+
+    if len(sys.argv) > 2:
+        image_dir = sys.argv[1]
+        mask_dir = sys.argv[2]
+
+    print(f"Testing dataset:")
+    print(f"  Image dir: {image_dir}")
+    print(f"  Mask dir: {mask_dir}")
+
+    dataset = WallSegmentationDataset(
+        image_dir=image_dir,
+        mask_dir=mask_dir,
+        tile_grid_cells=8,
+        tile_size=512,
+        tiles_per_image=2,
+        mask_scale=50,
+        augment=True,
+        default_grid_size=200,  # Crypt uses 200px grid
+    )
+
+    if len(dataset) > 0:
+        print(f"\nDataset size: {len(dataset)}")
+
+        sample = dataset[0]
+        print(f"Sample keys: {sample.keys()}")
+        print(f"Image shape: {sample['image'].shape}")
+        print(f"Mask shape: {sample['mask'].shape}")
+        print(f"Mask unique values: {torch.unique(sample['mask'])}")
+        print(f"Name: {sample['name']}")
+
+        # Test dataloader
+        loader = create_dataloader(
+            image_dir=image_dir,
+            mask_dir=mask_dir,
+            batch_size=2,
+            num_workers=0,
+            default_grid_size=200,
+        )
+
+        batch = next(iter(loader))
+        print(f"\nBatch shapes:")
+        print(f"  Image: {batch['image'].shape}")
+        print(f"  Mask: {batch['mask'].shape}")
+    else:
+        print("No samples found. Check paths.")

@@ -61,13 +61,17 @@ class ImageTagger:
             '3': 'urban',
             '4': 'cave',
             '5': 'ship',
+            '6': 'building',
             # Quality
             'q': 'high_quality',
             'w': 'low_quality',
             # Grid
             'g': 'has_grid',
-            # Variants
-            'v': 'is_variant',
+            # Text
+            't': 'has_text',
+            # Lighting variants (has a counterpart with different lighting)
+            'n': 'night_variant',
+            'y': 'day_variant',
             # Use in training
             '0': 'keep',
             'd': 'discard',
@@ -98,7 +102,7 @@ class ImageTagger:
 
         # Force window to render before loading images
         self.root.update()
-        self.root.geometry("1000x800")
+        self.root.geometry("1200x800")
         self.root.update()
 
         # Load first image
@@ -148,6 +152,12 @@ class ImageTagger:
                 return i
         # All tagged, return last image
         return max(0, len(self.images) - 1)
+
+    def _open_in_viewer(self):
+        """Open current image in system default viewer."""
+        if self.current_index < len(self.images):
+            import os
+            os.startfile(self.images[self.current_index])
 
     def _jump_to_untagged(self):
         """Jump to next untagged image from current position."""
@@ -205,9 +215,24 @@ class ImageTagger:
         main_frame = tk.Frame(self.root, bg='#1a1a1a')
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Image display
-        self.image_label = tk.Label(main_frame, bg='#2a2a2a')
-        self.image_label.pack(fill=tk.BOTH, expand=True)
+        # Image frame (holds both images side by side)
+        image_frame = tk.Frame(main_frame, bg='#1a1a1a')
+        image_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Main image display (left)
+        self.image_label = tk.Label(image_frame, bg='#2a2a2a')
+        self.image_label.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Zoomed preview (right)
+        zoom_frame = tk.Frame(image_frame, bg='#1a1a1a')
+        zoom_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+
+        zoom_title = tk.Label(zoom_frame, text="Center (1:1)", font=('Consolas', 9),
+                              fg='#888888', bg='#1a1a1a')
+        zoom_title.pack()
+
+        self.zoom_label = tk.Label(zoom_frame, bg='#2a2a2a', width=250, height=250)
+        self.zoom_label.pack()
 
         # Info frame
         info_frame = tk.Frame(main_frame, bg='#1a1a1a')
@@ -233,6 +258,18 @@ class ImageTagger:
         )
         self.filename_label.pack(side=tk.LEFT, padx=(20, 0))
 
+        # Open in viewer link
+        self.open_link = tk.Label(
+            info_frame,
+            text="[Open]",
+            font=('Consolas', 10, 'underline'),
+            fg='#6699ff',
+            bg='#1a1a1a',
+            cursor='hand2'
+        )
+        self.open_link.pack(side=tk.LEFT, padx=(10, 0))
+        self.open_link.bind('<Button-1>', lambda e: self._open_in_viewer())
+
         # Current tags display
         self.tags_label = tk.Label(
             main_frame,
@@ -257,23 +294,68 @@ class ImageTagger:
         help_frame = tk.Frame(main_frame, bg='#1a1a1a')
         help_frame.pack(fill=tk.X, pady=(10, 0))
 
-        # Build help text
-        help_lines = ["Tags (toggle on/off):"]
-        for key, tag in sorted(self.tags.items()):
-            help_lines.append(f"  [{key}] {tag}")
-        help_lines.append("")
-        help_lines.append("")
-        help_lines.append("Controls: [Space/Enter] Next  [Backspace] Back  [U] Jump to untagged  [Esc] Quit")
+        # Build help text in three columns
+        sorted_tags = sorted(self.tags.items())
+        n = len(sorted_tags)
+        col_size = (n + 2) // 3
+        col1_tags = sorted_tags[:col_size]
+        col2_tags = sorted_tags[col_size:col_size*2]
+        col3_tags = sorted_tags[col_size*2:]
+
+        col1_lines = ["Tags:"]
+        for key, tag in col1_tags:
+            col1_lines.append(f"  [{key}] {tag}")
+
+        col2_lines = [""]
+        for key, tag in col2_tags:
+            col2_lines.append(f"  [{key}] {tag}")
+
+        col3_lines = [""]
+        for key, tag in col3_tags:
+            col3_lines.append(f"  [{key}] {tag}")
 
         self.help_label = tk.Label(
             help_frame,
-            text="\n".join(help_lines),
+            text="\n".join(col1_lines),
             font=('Consolas', 9),
             fg='#666666',
             bg='#1a1a1a',
             justify=tk.LEFT
         )
         self.help_label.pack(side=tk.LEFT)
+
+        self.help_label2 = tk.Label(
+            help_frame,
+            text="\n".join(col2_lines),
+            font=('Consolas', 9),
+            fg='#666666',
+            bg='#1a1a1a',
+            justify=tk.LEFT
+        )
+        self.help_label2.pack(side=tk.LEFT, padx=(20, 0))
+
+        self.help_label3 = tk.Label(
+            help_frame,
+            text="\n".join(col3_lines),
+            font=('Consolas', 9),
+            fg='#666666',
+            bg='#1a1a1a',
+            justify=tk.LEFT
+        )
+        self.help_label3.pack(side=tk.LEFT, padx=(20, 0))
+
+        # Controls label
+        controls_frame = tk.Frame(main_frame, bg='#1a1a1a')
+        controls_frame.pack(fill=tk.X, pady=(5, 0))
+
+        controls_label = tk.Label(
+            controls_frame,
+            text="Controls: [Space/Enter] Next  [Backspace] Back  [U] Jump to untagged  [Esc] Quit",
+            font=('Consolas', 9),
+            fg='#666666',
+            bg='#1a1a1a'
+        )
+        controls_label.pack(side=tk.LEFT)
 
         # Stats label
         self.stats_label = tk.Label(
@@ -325,12 +407,14 @@ class ImageTagger:
             self.current_tags = set()
 
         try:
-            # Load and resize image
+            # Load image
             img = Image.open(image_path)
+            original_img = img.copy()
 
+            # Resize for main display
             win_width = self.root.winfo_width()
             win_height = self.root.winfo_height()
-            max_width = max(400, win_width - 40) if win_width > 100 else 860
+            max_width = max(400, win_width - 300) if win_width > 100 else 600  # Leave room for zoom panel
             max_height = max(300, win_height - 280) if win_height > 300 else 500
 
             ratio = min(max_width / img.width, max_height / img.height)
@@ -341,6 +425,20 @@ class ImageTagger:
             photo = ImageTk.PhotoImage(img)
             self.image_label.configure(image=photo)
             self.image_label.image = photo
+
+            # Create zoomed center crop (1:1 pixels, 250x250 from center)
+            zoom_size = 250
+            cx, cy = original_img.width // 2, original_img.height // 2
+            half = zoom_size // 2
+            left = max(0, cx - half)
+            top = max(0, cy - half)
+            right = min(original_img.width, left + zoom_size)
+            bottom = min(original_img.height, top + zoom_size)
+
+            crop = original_img.crop((left, top, right, bottom))
+            zoom_photo = ImageTk.PhotoImage(crop)
+            self.zoom_label.configure(image=zoom_photo)
+            self.zoom_label.image = zoom_photo
 
             # Update labels
             self.progress_label.config(
@@ -458,10 +556,10 @@ class ImageTagger:
 def main():
     parser = argparse.ArgumentParser(description='Tag images with multiple labels')
 
-    parser.add_argument('--source', '-s', type=str, required=True,
-                       help='Source directory containing images')
-    parser.add_argument('--output', '-o', type=str, required=True,
-                       help='Output JSON file for tags')
+    parser.add_argument('--source', '-s', type=str, default='pretraining_data',
+                       help='Source directory containing images (default: pretraining_data)')
+    parser.add_argument('--output', '-o', type=str, default='pretraining_data/tags.json',
+                       help='Output JSON file for tags (default: pretraining_data/tags.json)')
     parser.add_argument('--tags', '-t', type=str, default=None,
                        help='JSON file with custom tags (key: tag_name)')
     parser.add_argument('--skip-tagged', '-u', action='store_true',
