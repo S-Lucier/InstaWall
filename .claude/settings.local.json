@@ -44,7 +44,8 @@
       "Bash(tasklist:*)",
       "Bash(nvidia-smi:*)",
       "Bash(xxd:*)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(powershell -Command:*)"
     ]
   }
 }

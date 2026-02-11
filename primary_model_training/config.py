@@ -32,8 +32,12 @@ class Config:
     in_channels: int = 3
 
     # Number of output classes
-    # 0: Background, 1: Wall (includes secret doors, windows), 2: Terrain, 3: Door
+    # Default (4): 0: Background, 1: Wall (includes secret doors, windows), 2: Terrain, 3: Door
+    # With merge_terrain (3): 0: Background, 1: Wall (includes terrain), 2: Door
     num_classes: int = 4
+
+    # Whether to merge terrain class into wall class
+    merge_terrain: bool = False
 
     # Feature channels at each encoder level
     features: List[int] = field(default_factory=lambda: [64, 128, 256, 512])
@@ -90,8 +94,9 @@ class Config:
     # Class weights for imbalanced data
     # Higher weight = more importance during training
     # Background is most common, walls/doors are rare
-    # [Background, Wall, Terrain, Door]
-    class_weights: List[float] = field(default_factory=lambda: [0.1, 1.0, 1.0, 2.0])
+    # Default (4 classes): [Background, Wall, Terrain, Door]
+    # With merge_terrain (3 classes): [Background, Wall, Door]
+    class_weights: Optional[List[float]] = None
 
     # ==========================================================================
     # Augmentation
@@ -138,6 +143,18 @@ class Config:
     def __post_init__(self):
         """Validate configuration after initialization."""
         assert 0 < self.tile_overlap < 1, "tile_overlap must be between 0 and 1"
+
+        # Apply merge_terrain settings
+        if self.merge_terrain:
+            self.num_classes = 3
+            if self.class_weights is None:
+                # [Background, Wall+Terrain, Door]
+                self.class_weights = [0.1, 1.0, 2.0]
+        else:
+            if self.class_weights is None:
+                # [Background, Wall, Terrain, Door]
+                self.class_weights = [0.1, 1.0, 1.0, 2.0]
+
         assert len(self.class_weights) == self.num_classes, \
             f"class_weights length ({len(self.class_weights)}) must match num_classes ({self.num_classes})"
 

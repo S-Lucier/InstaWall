@@ -54,6 +54,7 @@ class WallSegmentationDataset(Dataset):
         mask_scale: int = 50,
         augment: bool = True,
         default_grid_size: int = 140,
+        merge_terrain: bool = False,
     ):
         """
         Args:
@@ -66,6 +67,7 @@ class WallSegmentationDataset(Dataset):
             mask_scale: Scale factor used in mask files (class = value / scale)
             augment: Whether to apply augmentations
             default_grid_size: Default grid size if not in metadata
+            merge_terrain: Whether to merge terrain class into wall class
         """
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
@@ -75,6 +77,7 @@ class WallSegmentationDataset(Dataset):
         self.mask_scale = mask_scale
         self.augment = augment
         self.default_grid_size = default_grid_size
+        self.merge_terrain = merge_terrain
 
         self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0)
 
@@ -106,6 +109,14 @@ class WallSegmentationDataset(Dataset):
         samples = []
         extensions = ['.jpg', '.jpeg', '.png', '.webp']
 
+        # Try to load explicit name mapping first
+        name_mapping = {}
+        mapping_path = self.image_dir / 'name_mapping.json'
+        if mapping_path.exists():
+            with open(mapping_path) as f:
+                name_mapping = json.load(f)
+            print(f"Loaded name mapping with {len(name_mapping)} entries")
+
         # Get all image files
         image_files = []
         for ext in extensions:
@@ -115,7 +126,10 @@ class WallSegmentationDataset(Dataset):
         # Filter out mask/viz files
         image_files = [f for f in image_files if '_mask' not in f.stem and '_viz' not in f.stem]
 
-        # Build lookup by normalized name
+        # Build lookup by filename
+        image_by_name = {f.name: f for f in image_files}
+
+        # Build lookup by normalized name (fallback)
         image_lookup = {}
         for img_path in image_files:
             norm_name = self._normalize_name(img_path.stem)
@@ -127,13 +141,21 @@ class WallSegmentationDataset(Dataset):
         for mask_path in mask_files:
             # Extract base name (remove _mask_lines.png suffix)
             base_name = mask_path.stem.replace('_mask_lines', '')
-            norm_name = self._normalize_name(base_name)
 
-            # Try to find corresponding image
-            image_path = image_lookup.get(norm_name)
+            # Try explicit mapping first
+            image_path = None
+            if base_name in name_mapping:
+                mapped_name = name_mapping[base_name]
+                image_path = image_by_name.get(mapped_name)
+
+            # Fall back to normalized name matching
+            if image_path is None:
+                norm_name = self._normalize_name(base_name)
+                image_path = image_lookup.get(norm_name)
 
             if image_path is None:
                 # Try partial matching
+                norm_name = self._normalize_name(base_name)
                 for img_norm, img_path in image_lookup.items():
                     if norm_name in img_norm or img_norm in norm_name:
                         image_path = img_path
@@ -218,7 +240,14 @@ class WallSegmentationDataset(Dataset):
             return self.__getitem__(random.randint(0, len(self) - 1))
 
         # Convert mask values to class indices
+        # Original classes: 0=Background, 1=Wall, 2=Terrain, 3=Door
         mask = mask // self.mask_scale
+
+        # Merge terrain into wall if requested
+        # Remap: 0=Background, 1=Wall+Terrain, 2=Door (was 3)
+        if self.merge_terrain:
+            mask[mask == 2] = 1   # Terrain -> Wall
+            mask[mask == 3] = 2   # Door -> 2 (shift down)
 
         grid_size = sample['grid_size']
 

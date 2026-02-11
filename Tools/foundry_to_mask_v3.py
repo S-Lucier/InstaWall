@@ -166,12 +166,15 @@ class FoundryScene:
         )
 
     def calculate_offset(self) -> Tuple[int, int]:
-        """Calculate grid-aligned coordinate offset for padding"""
+        """Calculate grid-aligned coordinate offset for padding.
+
+        Foundry uses Math.ceil to snap padding to grid boundaries.
+        """
         if self.padding == 0:
             return (0, 0)
 
-        offset_x = round(self.width * self.padding / self.grid_size) * self.grid_size
-        offset_y = round(self.height * self.padding / self.grid_size) * self.grid_size
+        offset_x = math.ceil(self.width * self.padding / self.grid_size) * self.grid_size
+        offset_y = math.ceil(self.height * self.padding / self.grid_size) * self.grid_size
         return (int(offset_x), int(offset_y))
 
     def get_wall_thickness(self, custom_thickness: Optional[int] = None) -> int:
@@ -228,8 +231,6 @@ class FoundryScene:
         right = self.width + offset_x
         top = offset_y
         bottom = self.height + offset_y
-
-        # For no padding (offset=0), this gives 0 to width/height which is correct
 
         def wall_runs_along_edge(wall):
             x1, y1 = wall.x1, wall.y1

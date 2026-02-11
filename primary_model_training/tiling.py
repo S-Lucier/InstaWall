@@ -246,21 +246,31 @@ class TileStitcher:
         tile_pixels = self.tile_grid_cells * grid_size
         scale = tile_pixels / self.tile_size
 
-        for pred, info in zip(predictions, tile_infos):
-            # Crop center of prediction
-            if crop_margin > 0:
-                cropped = pred[crop_margin:-crop_margin, crop_margin:-crop_margin]
-            else:
-                cropped = pred
+        # Determine which tiles are at edges (need wider or full crop)
+        max_x = max(info.x for info in tile_infos) if tile_infos else 0
+        max_y = max(info.y for info in tile_infos) if tile_infos else 0
 
-            # Calculate position in output (center of tile in original coordinates)
-            center_offset = int(crop_margin * scale)
-            out_x = info.x + center_offset
-            out_y = info.y + center_offset
+        for pred, info in zip(predictions, tile_infos):
+            # For edge tiles, extend the crop to cover the image boundary
+            top_margin = crop_margin if info.y > 0 else 0
+            left_margin = crop_margin if info.x > 0 else 0
+            bottom_margin = crop_margin if info.y < max_y else 0
+            right_margin = crop_margin if info.x < max_x else 0
+
+            # Crop prediction with edge-aware margins
+            y1 = top_margin
+            y2 = self.tile_size - bottom_margin
+            x1 = left_margin
+            x2 = self.tile_size - right_margin
+            cropped = pred[y1:y2, x1:x2]
+
+            # Calculate position in output
+            out_x = info.x + int(left_margin * scale)
+            out_y = info.y + int(top_margin * scale)
 
             # Resize cropped prediction to original scale
-            out_w = int(crop_size * scale)
-            out_h = int(crop_size * scale)
+            out_w = int((x2 - x1) * scale)
+            out_h = int((y2 - y1) * scale)
 
             pil_cropped = PILImage.fromarray(cropped)
             resample = PILImage.Resampling.NEAREST  # Use nearest for class labels

@@ -141,6 +141,7 @@ class Trainer:
             tiles_per_image=4,
             mask_scale=config.mask_scale,
             augment=config.augment,
+            merge_terrain=config.merge_terrain,
         )
 
         self.train_loader = DataLoader(
@@ -401,6 +402,10 @@ def main():
     parser.add_argument('--no-attention', action='store_true',
                         help='Disable attention gates')
 
+    # Classes
+    parser.add_argument('--merge-terrain', action='store_true',
+                        help='Merge terrain class into wall class (4 -> 3 classes)')
+
     # Other
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
@@ -424,6 +429,7 @@ def main():
         use_attention=not args.no_attention,
         seed=args.seed,
         augment=not args.no_augment,
+        merge_terrain=args.merge_terrain,
     )
 
     # Train
