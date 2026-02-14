@@ -373,17 +373,28 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
         cx, cy = door['x'], door['y']
         ddx, ddy = door['dir']['x'], door['dir']['y']
 
-        # For secret doors in recessed mode: shift center line 0.25 grid
-        # toward the wall end (opposite of dir direction)
+        # Shift: moves line along dir axis (multiplied by ddx or ddy)
+        # - Secret doors in recessed mode: -0.25 toward wall end
+        # - Types 7, 8: PNG door graphic is offset from tile center
+        #   (measured via detect_door_offset.py across 105 maps)
+        # Center offset: constant shift along the line axis (independent of dir sign)
         if door_type == 6 and method == 'recessed':
             shift = -0.25  # toward opposite-of-dir (wall end)
+            center_offset = 0.0
+        elif door_type == 7:
+            shift = -0.25  # ±0.25 grid opposite to dir
+            center_offset = 0.0
+        elif door_type == 8:
+            shift = -0.20  # ±0.20 grid opposite to dir
+            center_offset = 0.06  # +0.06 grid constant
         else:
             shift = 0.0
+            center_offset = 0.0
 
         # Door line is perpendicular to direction, at center of tile
         if ddx != 0:
             # Passage runs horizontally -> door line is vertical
-            line_x = cx + 0.5 + (ddx * shift)
+            line_x = cx + 0.5 + center_offset + (ddx * shift)
             y_start = cy
             y_end = cy + 1
             # Extend to meet recessed passage walls
@@ -396,7 +407,7 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
             p2 = grid_to_pixel(line_x, y_end)
         else:
             # Passage runs vertically -> door line is horizontal
-            line_y = cy + 0.5 + (ddy * shift)
+            line_y = cy + 0.5 + center_offset + (ddy * shift)
             x_start = cx
             x_end = cx + 1
             # Extend to meet recessed passage walls
