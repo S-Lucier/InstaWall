@@ -3,8 +3,8 @@ Generate wall line masks from Watabou dungeon exports.
 
 Two methods:
 - edge: Walls placed at room edges (where floor meets wall), no offset
-- center: Walls offset 0.25 grid units outward into wall area
-          (toward center of visual wall between rooms)
+- recessed: Walls offset 0.25 grid units outward into wall area
+            (toward center of visual wall between rooms)
 
 Class values (from MASK_TRAINING_STRATEGY.md):
 - 0 = Background (unmarked pixels)
@@ -21,6 +21,7 @@ Based on coordinate transform from: https://github.com/TarkanAl-Kazily/one-page-
 """
 
 import json
+import math
 import numpy as np
 from PIL import Image
 import cv2
@@ -28,7 +29,7 @@ from pathlib import Path
 
 
 GRID_SIZE = 70  # Watabou's default export grid size
-CENTER_WALL_OFFSET = 0.25  # Grid units outward for center method
+CENTER_WALL_OFFSET = 0.25  # Grid units outward for recessed method
 
 # Class values
 CLASS_BG = 0
@@ -36,8 +37,8 @@ CLASS_WALL = 50
 CLASS_DOOR = 150
 
 # Door type classification (see Text_Files/watabou_door_types.txt)
-DOOR_RENDER_AS_DOOR = {1, 5, 7}   # Normal doors -> Door class
-DOOR_RENDER_AS_WALL = {6, 4, 8}   # Secret doors (6), barred/portcullis (4, 8) -> Wall class
+DOOR_RENDER_AS_DOOR = {1, 4, 5, 7, 8}  # Normal doors + barred/portcullis -> Door class
+DOOR_RENDER_AS_WALL = {6}              # Secret doors -> Wall class
 # Types 0, 2, 3, 9 = open passages / open frames / stairs -> no line
 
 
@@ -49,7 +50,7 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
     Args:
         json_path: Path to Watabou JSON
         png_path: Path to Watabou PNG (for dimensions and coordinate alignment)
-        method: 'edge' or 'center'
+        method: 'edge' or 'recessed'
         circular: Whether to render circular rooms (rotunda)
         wall_thickness: Line thickness in pixels (default: GRID_SIZE * 0.05)
 
@@ -68,8 +69,8 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
         wall_thickness = max(2, int(GRID_SIZE * 0.05))
 
     # Edge: walls at room boundary (offset=0)
-    # Center: walls pushed outward into wall area (offset=0.25 toward void)
-    wall_offset = CENTER_WALL_OFFSET if method == 'center' else 0.0
+    # Recessed: walls pushed outward into wall area (offset=0.25 toward void)
+    wall_offset = CENTER_WALL_OFFSET if method == 'recessed' else 0.0
 
     # --- Coordinate transform (same as floor mask script) ---
     min_x = min(r['x'] for r in rects)
@@ -101,6 +102,13 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
                 if is_rotunda:
                     rotunda_cells.add((x, y))
 
+    # --- Build rotunda cell-to-rect mapping (for ellipse intersection) ---
+    rotunda_cell_to_rect = {}
+    for rect in rotunda_rects:
+        for x in range(rect['x'], rect['x'] + rect['w']):
+            for y in range(rect['y'], rect['y'] + rect['h']):
+                rotunda_cell_to_rect[(x, y)] = rect
+
     # --- Helper functions ---
     def grid_to_pixel(gx, gy):
         """Convert grid coordinate (float) to pixel coordinate."""
@@ -119,6 +127,30 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
         p2 = clamp_point(p2)
         cv2.line(mask, p1, p2, int(color), thickness)
 
+    def ellipse_x_at_y(rect, y_grid):
+        """Get (x_left, x_right) where rotunda ellipse intersects y_grid."""
+        cx = rect['x'] + rect['w'] / 2.0
+        cy = rect['y'] + rect['h'] / 2.0
+        rx = rect['w'] / 2.0 + (CENTER_WALL_OFFSET if method == 'recessed' else 0)
+        ry = rect['h'] / 2.0 + (CENTER_WALL_OFFSET if method == 'recessed' else 0)
+        y_norm = (y_grid - cy) / ry
+        if abs(y_norm) >= 1:
+            return None
+        dx = rx * math.sqrt(1 - y_norm ** 2)
+        return (cx - dx, cx + dx)
+
+    def ellipse_y_at_x(rect, x_grid):
+        """Get (y_top, y_bottom) where rotunda ellipse intersects x_grid."""
+        cx = rect['x'] + rect['w'] / 2.0
+        cy = rect['y'] + rect['h'] / 2.0
+        rx = rect['w'] / 2.0 + (CENTER_WALL_OFFSET if method == 'recessed' else 0)
+        ry = rect['h'] / 2.0 + (CENTER_WALL_OFFSET if method == 'recessed' else 0)
+        x_norm = (x_grid - cx) / rx
+        if abs(x_norm) >= 1:
+            return None
+        dy = ry * math.sqrt(1 - x_norm ** 2)
+        return (cy - dy, cy + dy)
+
     # --- Create mask ---
     mask = np.zeros((img.height, img.width), dtype=np.uint8)
 
@@ -129,6 +161,15 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
             secret_door_info[(door['x'], door['y'])] = (
                 door['dir']['x'], door['dir']['y']
             )
+
+    # --- Build exit edge set (type 3 stairs = dungeon exits) ---
+    # dir points toward room interior; exit is opposite dir
+    exit_edges = set()  # (cx, cy, dx, dy) = cell + void direction
+    for door in doors:
+        if door.get('type', 0) == 3:
+            sx, sy = door['x'], door['y']
+            ddx, ddy = door['dir']['x'], door['dir']['y']
+            exit_edges.add((sx, sy, -ddx, -ddy))
 
     # =============================================
     # PASS 1: Wall lines on void-facing edges
@@ -150,6 +191,37 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
             # Skip if neighbor is occupied (interior edge) or rotunda
             if (nx, ny) in occupied or (nx, ny) in rotunda_cells:
                 continue
+
+            # Exit wall handling (type 3 stairs = dungeon exits)
+            if (cx, cy, dx, dy) in exit_edges:
+                if method == 'edge':
+                    continue  # Remove exit wall entirely
+                else:
+                    # Recessed: draw only stubs at tile edges that connect
+                    # to the perpendicular recessed passage walls
+                    if dx != 0:  # Vertical exit wall
+                        edge_x = cx + (1 if dx > 0 else 0)
+                        edge_x_f = edge_x + (dx * wall_offset)
+                        # Top stub: tile edge outward to recessed passage wall
+                        p1 = grid_to_pixel(edge_x_f, cy)
+                        p2 = grid_to_pixel(edge_x_f, cy - wall_offset)
+                        draw_line(p1, p2, CLASS_WALL, wall_thickness)
+                        # Bottom stub: tile edge outward to recessed passage wall
+                        p1 = grid_to_pixel(edge_x_f, cy + 1)
+                        p2 = grid_to_pixel(edge_x_f, cy + 1 + wall_offset)
+                        draw_line(p1, p2, CLASS_WALL, wall_thickness)
+                    else:  # Horizontal exit wall
+                        edge_y = cy + (1 if dy > 0 else 0)
+                        edge_y_f = edge_y + (dy * wall_offset)
+                        # Left stub: tile edge outward to recessed passage wall
+                        p1 = grid_to_pixel(cx, edge_y_f)
+                        p2 = grid_to_pixel(cx - wall_offset, edge_y_f)
+                        draw_line(p1, p2, CLASS_WALL, wall_thickness)
+                        # Right stub: tile edge outward to recessed passage wall
+                        p1 = grid_to_pixel(cx + 1, edge_y_f)
+                        p2 = grid_to_pixel(cx + 1 + wall_offset, edge_y_f)
+                        draw_line(p1, p2, CLASS_WALL, wall_thickness)
+                    continue
 
             # Void edge: draw wall line
             # Offset direction: +dx/+dy pushes OUTWARD toward void (for center method)
@@ -174,6 +246,44 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
                             # Thick side at y=cy+1 (bottom), remove bottom half
                             y_end = cy + 0.5
 
+                # Corner adjustment for recessed method:
+                # At each endpoint, check if wall continues straight, or if
+                # it's an outside corner (extend) or inside corner (trim).
+                # Skip if endpoint is adjacent to a rotunda (handled below).
+                if method == 'recessed':
+                    # Top endpoint
+                    if (cx, cy - 1) not in rotunda_cell_to_rect:
+                        top_occ = (cx, cy - 1) in occupied
+                        top_diag = (cx + dx, cy - 1) in occupied
+                        top_continues = top_occ and not top_diag
+                        if not top_continues:
+                            if top_diag:
+                                y_start += wall_offset  # Inside corner: trim
+                            else:
+                                y_start -= wall_offset  # Outside corner: extend
+                    # Bottom endpoint
+                    if (cx, cy + 1) not in rotunda_cell_to_rect:
+                        bot_occ = (cx, cy + 1) in occupied
+                        bot_diag = (cx + dx, cy + 1) in occupied
+                        bot_continues = bot_occ and not bot_diag
+                        if not bot_continues:
+                            if bot_diag:
+                                y_end -= wall_offset  # Inside corner: trim
+                            else:
+                                y_end += wall_offset  # Outside corner: extend
+
+                # Set wall endpoint to rotunda ellipse intersection
+                if (cx, cy - 1) in rotunda_cell_to_rect:
+                    r = rotunda_cell_to_rect[(cx, cy - 1)]
+                    result = ellipse_y_at_x(r, edge_x_f)
+                    if result:
+                        y_start = result[1]  # Ellipse bottom at this x
+                if (cx, cy + 1) in rotunda_cell_to_rect:
+                    r = rotunda_cell_to_rect[(cx, cy + 1)]
+                    result = ellipse_y_at_x(r, edge_x_f)
+                    if result:
+                        y_end = result[0]  # Ellipse top at this x
+
                 p1 = grid_to_pixel(edge_x_f, y_start)
                 p2 = grid_to_pixel(edge_x_f, y_end)
 
@@ -197,6 +307,42 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
                         else:
                             # Thick side at x=cx+1 (right), remove right half
                             x_end = cx + 0.5
+
+                # Corner adjustment for recessed method
+                # Skip if endpoint is adjacent to a rotunda (handled below).
+                if method == 'recessed':
+                    # Left endpoint
+                    if (cx - 1, cy) not in rotunda_cell_to_rect:
+                        left_occ = (cx - 1, cy) in occupied
+                        left_diag = (cx - 1, cy + dy) in occupied
+                        left_continues = left_occ and not left_diag
+                        if not left_continues:
+                            if left_diag:
+                                x_start += wall_offset  # Inside corner: trim
+                            else:
+                                x_start -= wall_offset  # Outside corner: extend
+                    # Right endpoint
+                    if (cx + 1, cy) not in rotunda_cell_to_rect:
+                        right_occ = (cx + 1, cy) in occupied
+                        right_diag = (cx + 1, cy + dy) in occupied
+                        right_continues = right_occ and not right_diag
+                        if not right_continues:
+                            if right_diag:
+                                x_end -= wall_offset  # Inside corner: trim
+                            else:
+                                x_end += wall_offset  # Outside corner: extend
+
+                # Set wall endpoint to rotunda ellipse intersection
+                if (cx - 1, cy) in rotunda_cell_to_rect:
+                    r = rotunda_cell_to_rect[(cx - 1, cy)]
+                    result = ellipse_x_at_y(r, edge_y_f)
+                    if result:
+                        x_start = result[1]  # Ellipse right at this y
+                if (cx + 1, cy) in rotunda_cell_to_rect:
+                    r = rotunda_cell_to_rect[(cx + 1, cy)]
+                    result = ellipse_x_at_y(r, edge_y_f)
+                    if result:
+                        x_end = result[0]  # Ellipse left at this y
 
                 p1 = grid_to_pixel(x_start, edge_y_f)
                 p2 = grid_to_pixel(x_end, edge_y_f)
@@ -227,20 +373,45 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
         cx, cy = door['x'], door['y']
         ddx, ddy = door['dir']['x'], door['dir']['y']
 
+        # For secret doors in recessed mode: shift center line 0.25 grid
+        # toward the wall end (opposite of dir direction)
+        if door_type == 6 and method == 'recessed':
+            shift = -0.25  # toward opposite-of-dir (wall end)
+        else:
+            shift = 0.0
+
         # Door line is perpendicular to direction, at center of tile
         if ddx != 0:
             # Passage runs horizontally -> door line is vertical
-            p1 = grid_to_pixel(cx + 0.5, cy)
-            p2 = grid_to_pixel(cx + 0.5, cy + 1)
+            line_x = cx + 0.5 + (ddx * shift)
+            y_start = cy
+            y_end = cy + 1
+            # Extend to meet recessed passage walls
+            if method == 'recessed':
+                if (cx, cy - 1) not in occupied:
+                    y_start -= wall_offset
+                if (cx, cy + 1) not in occupied:
+                    y_end += wall_offset
+            p1 = grid_to_pixel(line_x, y_start)
+            p2 = grid_to_pixel(line_x, y_end)
         else:
             # Passage runs vertically -> door line is horizontal
-            p1 = grid_to_pixel(cx, cy + 0.5)
-            p2 = grid_to_pixel(cx + 1, cy + 0.5)
+            line_y = cy + 0.5 + (ddy * shift)
+            x_start = cx
+            x_end = cx + 1
+            # Extend to meet recessed passage walls
+            if method == 'recessed':
+                if (cx - 1, cy) not in occupied:
+                    x_start -= wall_offset
+                if (cx + 1, cy) not in occupied:
+                    x_end += wall_offset
+            p1 = grid_to_pixel(x_start, line_y)
+            p2 = grid_to_pixel(x_end, line_y)
 
         draw_line(p1, p2, color, wall_thickness)
 
     # =============================================
-    # PASS 2b: Secret door half-wall lines
+    # PASS 2b: Secret door half-wall lines (edge method only)
     # =============================================
     # Secret doors (type 6) visually show a half-wall: one side of the
     # passage has a wall section flush with the room wall, extending from
@@ -248,10 +419,13 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
     #
     # We draw an additional wall line along the room-facing (interior) edge,
     # from one passage wall (void side) to the center of the tile.
+    # Only for edge method - recessed method shifts the center line instead.
 
     for door in doors:
         if door.get('type', 0) != 6:
             continue
+        if method == 'recessed':
+            continue  # Recessed mode shifts center line instead
 
         # cx, cy = grid coordinates of the 1x1 secret door tile
         # The tile occupies the square from (cx, cy) to (cx+1, cy+1)
@@ -327,19 +501,19 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
         draw_line(p1, p2, CLASS_WALL, wall_thickness)
 
     # =============================================
-    # PASS 3: Rotunda rooms - elliptical outlines
+    # PASS 3: Rotunda rooms - elliptical outlines with openings
     # =============================================
+    # Draw full ellipse on a temp mask, then erase where corridors/rooms
+    # connect to the rotunda. Merge onto main mask with np.maximum.
 
     for rect in rotunda_rects:
         center_gx = rect['x'] + rect['w'] / 2.0
         center_gy = rect['y'] + rect['h'] / 2.0
 
-        if method == 'center':
-            # Expand outward into wall area
+        if method == 'recessed':
             rx_grid = rect['w'] / 2.0 + CENTER_WALL_OFFSET
             ry_grid = rect['h'] / 2.0 + CENTER_WALL_OFFSET
         else:
-            # Edge: at room boundary
             rx_grid = rect['w'] / 2.0
             ry_grid = rect['h'] / 2.0
 
@@ -347,9 +521,47 @@ def generate_wall_mask(json_path, png_path, method='edge', circular=True,
         rx_px = int(round(rx_grid * GRID_SIZE))
         ry_px = int(round(ry_grid * GRID_SIZE))
 
-        if rx_px > 0 and ry_px > 0:
-            cv2.ellipse(mask, center_px, (rx_px, ry_px),
-                        0, 0, 360, CLASS_WALL, wall_thickness)
+        if rx_px <= 0 or ry_px <= 0:
+            continue
+
+        # Draw full ellipse on temp mask
+        temp = np.zeros_like(mask)
+        cv2.ellipse(temp, center_px, (rx_px, ry_px),
+                    0, 0, 360, CLASS_WALL, wall_thickness)
+
+        # Erase openings where non-rotunda occupied cells connect
+        margin = 0.5  # grid units - enough to cover ellipse line width
+        # For recessed, corridor walls are offset by wall_offset beyond cell
+        # boundary, so erase rects must extend further in the perpendicular dir
+        perp_ext = wall_offset  # 0.25 for recessed, 0 for edge
+        rx, ry, rw, rh = rect['x'], rect['y'], rect['w'], rect['h']
+
+        for y in range(ry, ry + rh):
+            # Left side
+            if (rx - 1, y) in occupied and (rx - 1, y) not in rotunda_cells:
+                p1 = grid_to_pixel(rx - margin, y - perp_ext)
+                p2 = grid_to_pixel(rx + margin, y + 1 + perp_ext)
+                cv2.rectangle(temp, p1, p2, 0, -1)
+            # Right side
+            if (rx + rw, y) in occupied and (rx + rw, y) not in rotunda_cells:
+                p1 = grid_to_pixel(rx + rw - margin, y - perp_ext)
+                p2 = grid_to_pixel(rx + rw + margin, y + 1 + perp_ext)
+                cv2.rectangle(temp, p1, p2, 0, -1)
+
+        for x in range(rx, rx + rw):
+            # Top side
+            if (x, ry - 1) in occupied and (x, ry - 1) not in rotunda_cells:
+                p1 = grid_to_pixel(x - perp_ext, ry - margin)
+                p2 = grid_to_pixel(x + 1 + perp_ext, ry + margin)
+                cv2.rectangle(temp, p1, p2, 0, -1)
+            # Bottom side
+            if (x, ry + rh) in occupied and (x, ry + rh) not in rotunda_cells:
+                p1 = grid_to_pixel(x - perp_ext, ry + rh - margin)
+                p2 = grid_to_pixel(x + 1 + perp_ext, ry + rh + margin)
+                cv2.rectangle(temp, p1, p2, 0, -1)
+
+        # Merge onto main mask (keeps higher class values like doors)
+        mask = np.maximum(mask, temp)
 
     return mask
 
@@ -366,7 +578,7 @@ def batch_process(json_dir, image_dir, output_dir, method='edge',
     print(f"Processing {len(json_files)} dungeons")
     print(f"  Method: {method}")
     print(f"  Grid size: {GRID_SIZE}px")
-    print(f"  Wall offset: {CENTER_WALL_OFFSET if method == 'center' else 0.0} grid units outward")
+    print(f"  Wall offset: {CENTER_WALL_OFFSET if method == 'recessed' else 0.0} grid units outward")
     print(f"  Wall thickness: {wall_thickness or max(2, int(GRID_SIZE * 0.05))}px")
     print(f"  Circular rooms: {circular}")
     print()
@@ -422,7 +634,7 @@ def batch_process(json_dir, image_dir, output_dir, method='edge',
     print("Class values:")
     print(f"  0 = Background")
     print(f"  {CLASS_WALL} = Wall (boundaries + secret doors + barred)")
-    print(f"  {CLASS_DOOR} = Door (types 1, 5, 7)")
+    print(f"  {CLASS_DOOR} = Door (types 1, 4, 5, 7, 8)")
 
 
 if __name__ == "__main__":
@@ -437,7 +649,7 @@ if __name__ == "__main__":
                         help="Directory with Watabou PNG files")
     parser.add_argument("--output", required=True,
                         help="Output directory for masks")
-    parser.add_argument("--method", choices=['edge', 'center'], default='edge',
+    parser.add_argument("--method", choices=['edge', 'recessed'], default='edge',
                         help="Wall placement method (default: edge)")
     parser.add_argument("--circular", action='store_true', default=True,
                         help="Render circular rooms (default: True)")
