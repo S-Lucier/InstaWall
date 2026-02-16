@@ -21,8 +21,17 @@ class Config:
     # Directory containing mask files (line segment masks)
     mask_dir: str = "data/foundry_to_mask/line_masks"
 
+    # Optional JSON file with per-map metadata (grid_size, etc.)
+    metadata_file: Optional[str] = None
+
     # Output directory for checkpoints and logs
     output_dir: str = "outputs/wall_segmentation"
+
+    # Optional Watabou data directory (contains watabou_images/, watabou_edge_mask/, watabou_recessed_mask/)
+    watabou_dir: Optional[str] = None
+
+    # Per-epoch inclusion probability for Watabou maps (0.36 ≈ match Foundry count)
+    watabou_include_prob: float = 0.36
 
     # ==========================================================================
     # Model Architecture
@@ -70,7 +79,10 @@ class Config:
     batch_size: int = 8
 
     # Number of epochs
-    epochs: int = 100
+    epochs: int = 1000
+
+    # Early stopping: stop if no new best IoU for this many epochs (0 = disabled)
+    early_stopping_patience: int = 50
 
     # Learning rate
     learning_rate: float = 1e-4
@@ -128,7 +140,7 @@ class Config:
     val_interval: int = 1
 
     # Save checkpoint every N epochs
-    save_interval: int = 5
+    save_interval: int = 50
 
     # Keep only the N best checkpoints
     keep_best_n: int = 3

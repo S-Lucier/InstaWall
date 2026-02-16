@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import ctypes
 import json
 import os
 import random
@@ -21,6 +22,17 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
+
+
+def _show_power_limit_reminder():
+    """Show a popup reminding the user to run the GPU power limit bat file."""
+    bat_path = Path(__file__).resolve().parent.parent / 'gpu_power_training.bat'
+    ctypes.windll.user32.MessageBoxW(
+        0,
+        f"Run this as admin before training:\n\n{bat_path}",
+        "GPU Power Limit Reminder",
+        0x40,  # MB_ICONINFORMATION
+    )
 
 from .config import Config
 from .model import WallSegmentationUNet, create_model
@@ -111,17 +123,21 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor, num_classes: int) 
 class Trainer:
     """Training manager."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, resume_path: Optional[str] = None):
         self.config = config
+        self.resume_path = resume_path
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
 
         # Set seed
         set_seed(config.seed)
 
-        # Create output directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path(config.output_dir) / timestamp
+        # Create output directory (reuse parent dir if resuming)
+        if resume_path:
+            self.output_dir = Path(resume_path).parent
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.output_dir = Path(config.output_dir) / timestamp
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Save config
@@ -136,12 +152,15 @@ class Trainer:
         self.train_dataset = WallSegmentationDataset(
             image_dir=config.image_dir,
             mask_dir=config.mask_dir,
+            metadata_file=config.metadata_file,
             tile_grid_cells=config.tile_grid_cells,
             tile_size=config.tile_size,
             tiles_per_image=4,
             mask_scale=config.mask_scale,
             augment=config.augment,
             merge_terrain=config.merge_terrain,
+            watabou_dir=config.watabou_dir,
+            watabou_include_prob=config.watabou_include_prob,
         )
 
         self.train_loader = DataLoader(
@@ -190,6 +209,10 @@ class Trainer:
         # Tracking
         self.best_loss = float('inf')
         self.best_iou = 0.0
+        self.best_state = None  # Best model weights kept in CPU RAM
+        self.best_epoch = 0
+        self.epochs_since_best = 0
+        self.start_epoch = 0
         self.history = {
             'train_loss': [],
             'val_loss': [],
@@ -197,6 +220,33 @@ class Trainer:
             'val_iou': [],
             'lr': [],
         }
+
+        # Resume from checkpoint
+        if resume_path:
+            self._load_checkpoint(resume_path)
+
+    def _load_checkpoint(self, path: str):
+        """Load model, optimizer, scheduler, and tracking state from checkpoint."""
+        print(f"Resuming from: {path}")
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        self.start_epoch = checkpoint.get('epoch', 0) + 1
+        self.best_loss = checkpoint.get('best_loss', float('inf'))
+        self.best_iou = checkpoint.get('best_iou', 0.0)
+
+        # Reload history if available
+        history_path = Path(path).parent / 'history.json'
+        if history_path.exists():
+            with open(history_path) as f:
+                self.history = json.load(f)
+
+        print(f"  Resumed at epoch {self.start_epoch}, best IoU: {self.best_iou:.4f}")
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train for one epoch."""
@@ -289,8 +339,51 @@ class Trainer:
             'mean_iou': np.mean(all_ious) if all_ious else 0.0,
         }
 
+    def _snapshot_best(self):
+        """Copy current model weights to CPU RAM as the best checkpoint."""
+        import copy
+        self.best_state = copy.deepcopy(self.model.state_dict())
+        # Move all tensors to CPU to free VRAM
+        for k in self.best_state:
+            self.best_state[k] = self.best_state[k].cpu()
+        self.best_epoch = self.start_epoch  # updated by caller
+
     def save_checkpoint(self, epoch: int, is_best: bool = False):
-        """Save model checkpoint."""
+        """Save model checkpoint at save intervals."""
+        # Snapshot best weights to CPU RAM whenever we get a new best
+        if is_best:
+            self._snapshot_best()
+            self.best_epoch = epoch
+
+        # Only write to disk at save intervals
+        if (epoch + 1) % self.config.save_interval == 0:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_loss': self.best_loss,
+                'best_iou': self.best_iou,
+                'config': vars(self.config),
+            }
+            if self.scheduler is not None:
+                checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+
+            torch.save(checkpoint, self.output_dir / 'checkpoint_latest.pt')
+            torch.save(checkpoint, self.output_dir / f'checkpoint_epoch{epoch+1}.pt')
+
+            # Write best from RAM snapshot
+            if self.best_state is not None:
+                best_checkpoint = {
+                    'epoch': self.best_epoch,
+                    'model_state_dict': self.best_state,
+                    'best_loss': self.best_loss,
+                    'best_iou': self.best_iou,
+                    'config': vars(self.config),
+                }
+                torch.save(best_checkpoint, self.output_dir / 'checkpoint_best.pt')
+
+    def _save_final_checkpoint(self, epoch: int):
+        """Save latest and best checkpoint on exit."""
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
@@ -299,31 +392,38 @@ class Trainer:
             'best_iou': self.best_iou,
             'config': vars(self.config),
         }
-
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
 
-        # Save latest
         torch.save(checkpoint, self.output_dir / 'checkpoint_latest.pt')
 
-        # Save periodic
-        if (epoch + 1) % self.config.save_interval == 0:
-            torch.save(checkpoint, self.output_dir / f'checkpoint_epoch{epoch+1}.pt')
-
-        # Save best
-        if is_best:
-            torch.save(checkpoint, self.output_dir / 'checkpoint_best.pt')
+        if self.best_state is not None:
+            best_checkpoint = {
+                'epoch': self.best_epoch,
+                'model_state_dict': self.best_state,
+                'best_loss': self.best_loss,
+                'best_iou': self.best_iou,
+                'config': vars(self.config),
+            }
+            torch.save(best_checkpoint, self.output_dir / 'checkpoint_best.pt')
 
     def train(self):
         """Main training loop."""
+        # Remind user to set GPU power limit
+        if self.device.type == 'cuda' and os.name == 'nt':
+            _show_power_limit_reminder()
+
         print(f"\nStarting training for {self.config.epochs} epochs")
         print(f"Output directory: {self.output_dir}")
         print("=" * 60)
 
         start_time = time.time()
 
-        for epoch in range(self.config.epochs):
+        for epoch in range(self.start_epoch, self.config.epochs):
             epoch_start = time.time()
+
+            # Resample data sources for this epoch (subsamples Watabou, randomizes variants)
+            self.train_dataset.resample_for_epoch()
 
             # Train
             print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
@@ -348,6 +448,9 @@ class Trainer:
             if is_best:
                 self.best_iou = val_metrics['mean_iou']
                 self.best_loss = val_metrics['loss']
+                self.epochs_since_best = 0
+            else:
+                self.epochs_since_best += 1
 
             # Save checkpoint
             self.save_checkpoint(epoch, is_best)
@@ -356,11 +459,24 @@ class Trainer:
             epoch_time = time.time() - epoch_start
             print(f"  Train Loss: {train_metrics['loss']:.4f}, IoU: {train_metrics['mean_iou']:.4f}")
             print(f"  Val Loss: {val_metrics['loss']:.4f}, IoU: {val_metrics['mean_iou']:.4f}")
-            print(f"  Time: {epoch_time:.1f}s" + (" [BEST]" if is_best else ""))
+            print(f"  Time: {epoch_time:.1f}s" + (" [BEST]" if is_best else
+                  f" (no improvement for {self.epochs_since_best} epochs)"))
 
-            # Save history
-            with open(self.output_dir / 'history.json', 'w') as f:
-                json.dump(self.history, f, indent=2)
+            # Early stopping
+            patience = self.config.early_stopping_patience
+            if patience > 0 and self.epochs_since_best >= patience:
+                print(f"\nEarly stopping: no improvement for {patience} epochs")
+                break
+
+            # Save history (same interval as checkpoints to reduce SSD writes)
+            if (epoch + 1) % self.config.save_interval == 0:
+                with open(self.output_dir / 'history.json', 'w') as f:
+                    json.dump(self.history, f, indent=2)
+
+        # Final saves (history + pending best/latest checkpoint)
+        with open(self.output_dir / 'history.json', 'w') as f:
+            json.dump(self.history, f, indent=2)
+        self._save_final_checkpoint(epoch)
 
         total_time = time.time() - start_time
         print("\n" + "=" * 60)
@@ -377,12 +493,16 @@ def main():
                         help='Directory with battlemap images')
     parser.add_argument('--mask-dir', default='data/foundry_to_mask/line_masks',
                         help='Directory with mask files')
+    parser.add_argument('--metadata-file', default=None,
+                        help='JSON file with per-map grid sizes')
     parser.add_argument('--output-dir', default='outputs/wall_segmentation',
                         help='Output directory for checkpoints')
 
     # Training
-    parser.add_argument('--epochs', type=int, default=100,
+    parser.add_argument('--epochs', type=int, default=1000,
                         help='Number of epochs')
+    parser.add_argument('--early-stopping', type=int, default=50,
+                        help='Stop after N epochs without improvement (0 = disabled)')
     parser.add_argument('--batch-size', type=int, default=8,
                         help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4,
@@ -406,6 +526,16 @@ def main():
     parser.add_argument('--merge-terrain', action='store_true',
                         help='Merge terrain class into wall class (4 -> 3 classes)')
 
+    # Watabou data source
+    parser.add_argument('--watabou-dir', default=None,
+                        help='Watabou data directory (contains watabou_images/, watabou_edge_mask/, watabou_recessed_mask/)')
+    parser.add_argument('--watabou-prob', type=float, default=0.36,
+                        help='Per-epoch inclusion probability for Watabou maps (default: 0.36)')
+
+    # Resume
+    parser.add_argument('--resume', default=None,
+                        help='Path to checkpoint to resume from')
+
     # Other
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
@@ -418,6 +548,7 @@ def main():
     config = Config(
         image_dir=args.image_dir,
         mask_dir=args.mask_dir,
+        metadata_file=args.metadata_file,
         output_dir=args.output_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,
@@ -430,10 +561,13 @@ def main():
         seed=args.seed,
         augment=not args.no_augment,
         merge_terrain=args.merge_terrain,
+        watabou_dir=args.watabou_dir,
+        watabou_include_prob=args.watabou_prob,
+        early_stopping_patience=args.early_stopping,
     )
 
     # Train
-    trainer = Trainer(config)
+    trainer = Trainer(config, resume_path=args.resume)
     trainer.train()
 
 

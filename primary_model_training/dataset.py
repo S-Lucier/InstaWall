@@ -55,6 +55,8 @@ class WallSegmentationDataset(Dataset):
         augment: bool = True,
         default_grid_size: int = 140,
         merge_terrain: bool = False,
+        watabou_dir: Optional[str] = None,
+        watabou_include_prob: float = 0.36,
     ):
         """
         Args:
@@ -68,6 +70,8 @@ class WallSegmentationDataset(Dataset):
             augment: Whether to apply augmentations
             default_grid_size: Default grid size if not in metadata
             merge_terrain: Whether to merge terrain class into wall class
+            watabou_dir: Optional path to Watabou data (watabou_images/, watabou_edge_mask/, watabou_recessed_mask/)
+            watabou_include_prob: Per-epoch inclusion probability for each Watabou map
         """
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
@@ -78,6 +82,8 @@ class WallSegmentationDataset(Dataset):
         self.augment = augment
         self.default_grid_size = default_grid_size
         self.merge_terrain = merge_terrain
+        self.watabou_dir = Path(watabou_dir) if watabou_dir else None
+        self.watabou_include_prob = watabou_include_prob
 
         self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0)
 
@@ -87,9 +93,20 @@ class WallSegmentationDataset(Dataset):
             with open(metadata_file) as f:
                 self.metadata = json.load(f)
 
-        # Find image-mask pairs
-        self.samples = self._find_samples()
-        print(f"Found {len(self.samples)} image-mask pairs")
+        # Find all image-mask pairs from all sources
+        self.all_samples = self._find_samples()
+
+        foundry_count = sum(1 for s in self.all_samples if s['source'] == 'foundry')
+        watabou_count = sum(1 for s in self.all_samples if s['source'] == 'watabou')
+        print(f"Found {len(self.all_samples)} image-mask pairs "
+              f"(Foundry: {foundry_count}, Watabou: {watabou_count})")
+        if watabou_count > 0:
+            print(f"  Watabou include probability: {watabou_include_prob:.2f} "
+                  f"(~{int(watabou_count * watabou_include_prob)} per epoch)")
+
+        # Active samples for current epoch (resampled each epoch)
+        self.active_samples = list(self.all_samples)
+        self.resample_for_epoch()
 
         # Build augmentation pipeline
         self.transform = self._build_transform()
@@ -105,7 +122,15 @@ class WallSegmentationDataset(Dataset):
         return name
 
     def _find_samples(self) -> List[Dict]:
-        """Find matching image-mask pairs."""
+        """Find matching image-mask pairs from all sources."""
+        samples = []
+        samples.extend(self._find_foundry_samples())
+        if self.watabou_dir:
+            samples.extend(self._find_watabou_samples())
+        return samples
+
+    def _find_foundry_samples(self) -> List[Dict]:
+        """Find Foundry image-mask pairs using name mapping and fuzzy matching."""
         samples = []
         extensions = ['.jpg', '.jpeg', '.png', '.webp']
 
@@ -171,11 +196,51 @@ class WallSegmentationDataset(Dataset):
             samples.append({
                 'image_path': str(image_path),
                 'mask_path': str(mask_path),
+                'mask_path_alt': None,
                 'name': base_name,
                 'grid_size': grid_size,
+                'source': 'foundry',
             })
 
         return samples
+
+    def _find_watabou_samples(self) -> List[Dict]:
+        """Find Watabou image-mask pairs (direct filename match, edge masks only)."""
+        samples = []
+        image_dir = self.watabou_dir / 'watabou_images'
+        edge_dir = self.watabou_dir / 'watabou_edge_mask'
+
+        for image_path in sorted(image_dir.glob('*.png')):
+            name = image_path.stem
+            edge_mask = edge_dir / f"{name}.png"
+
+            if not edge_mask.exists():
+                print(f"Warning: No edge mask found for watabou map {name}")
+                continue
+
+            samples.append({
+                'image_path': str(image_path),
+                'mask_path': str(edge_mask),
+                'name': name,
+                'grid_size': 70,  # Watabou fixed grid size
+                'source': 'watabou',
+            })
+
+        return samples
+
+    def resample_for_epoch(self):
+        """Resample active samples for a new epoch.
+
+        Foundry maps are always included. Watabou maps are subsampled
+        with watabou_include_prob.
+        """
+        self.active_samples = []
+
+        for sample in self.all_samples:
+            if sample['source'] == 'watabou':
+                if random.random() > self.watabou_include_prob:
+                    continue
+            self.active_samples.append(sample)
 
     def _build_transform(self):
         """Build augmentation pipeline."""
@@ -191,18 +256,20 @@ class WallSegmentationDataset(Dataset):
 
                 # Color augmentations (image only)
                 A.ColorJitter(
-                    brightness=0.2,
-                    contrast=0.2,
-                    saturation=0.2,
-                    hue=0.05,
-                    p=0.3
+                    brightness=0.4,
+                    contrast=0.4,
+                    saturation=0.3,
+                    hue=0.1,
+                    p=0.5
                 ),
+                A.RandomGamma(gamma_limit=(60, 140), p=0.3),
 
                 # Quality augmentations (image only)
                 A.OneOf([
                     A.GaussNoise(std_range=(0.02, 0.05), p=1.0),
                     A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-                ], p=0.2),
+                    A.ImageCompression(quality_range=(40, 90), p=1.0),
+                ], p=0.3),
 
                 # Normalize and convert
                 A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
@@ -215,7 +282,7 @@ class WallSegmentationDataset(Dataset):
             ])
 
     def __len__(self):
-        return len(self.samples) * self.tiles_per_image
+        return len(self.active_samples) * self.tiles_per_image
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
@@ -229,7 +296,7 @@ class WallSegmentationDataset(Dataset):
         """
         # Determine which image and which tile
         sample_idx = idx // self.tiles_per_image
-        sample = self.samples[sample_idx]
+        sample = self.active_samples[sample_idx]
 
         # Load image and mask
         try:
