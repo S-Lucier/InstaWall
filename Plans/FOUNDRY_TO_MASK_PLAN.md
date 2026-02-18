@@ -1,4 +1,4 @@
-# Foundry VTT to Mask Converter
+# Foundry VTT to Mask Converter Plan
 
 ## Overview
 
