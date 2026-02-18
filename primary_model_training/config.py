@@ -37,6 +37,20 @@ class Config:
     # Model Architecture
     # ==========================================================================
 
+    # Model type: "unet", "segformer", or "segformer_gc" (with global context)
+    model_type: str = "unet"
+
+    # SegFormer variant: "b0" through "b5" (only used when model_type="segformer"/"segformer_gc")
+    segformer_variant: str = "b0"
+
+    # Use ImageNet normalization (auto-set to True for segformer in __post_init__)
+    use_imagenet_norm: bool = False
+
+    # Global context settings (only used when model_type="segformer_gc")
+    use_global_context: bool = False
+    global_image_size: int = 256
+    global_context_dim: int = 128
+
     # Number of input channels (RGB)
     in_channels: int = 3
 
@@ -89,6 +103,9 @@ class Config:
 
     # Weight decay (L2 regularization)
     weight_decay: float = 1e-5
+
+    # EMA decay rate (0 = disabled, 0.999 typical for segmentation)
+    ema_decay: float = 0.999
 
     # Learning rate scheduler
     scheduler: str = "cosine"  # "cosine", "step", "plateau"
@@ -154,7 +171,17 @@ class Config:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        assert self.model_type in ("unet", "segformer", "segformer_gc"), \
+            f"model_type must be 'unet', 'segformer', or 'segformer_gc', got '{self.model_type}'"
         assert 0 < self.tile_overlap < 1, "tile_overlap must be between 0 and 1"
+
+        # Auto-enable ImageNet normalization for SegFormer variants
+        if self.model_type in ("segformer", "segformer_gc"):
+            self.use_imagenet_norm = True
+
+        # Auto-enable global context for segformer_gc
+        if self.model_type == "segformer_gc":
+            self.use_global_context = True
 
         # Apply merge_terrain settings
         if self.merge_terrain:

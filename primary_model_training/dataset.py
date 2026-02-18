@@ -57,6 +57,8 @@ class WallSegmentationDataset(Dataset):
         merge_terrain: bool = False,
         watabou_dir: Optional[str] = None,
         watabou_include_prob: float = 0.36,
+        use_imagenet_norm: bool = False,
+        global_image_size: int = 0,
     ):
         """
         Args:
@@ -72,6 +74,8 @@ class WallSegmentationDataset(Dataset):
             merge_terrain: Whether to merge terrain class into wall class
             watabou_dir: Optional path to Watabou data (watabou_images/, watabou_edge_mask/, watabou_recessed_mask/)
             watabou_include_prob: Per-epoch inclusion probability for each Watabou map
+            use_imagenet_norm: Use ImageNet normalization (for SegFormer) instead of 0-1 range
+            global_image_size: If >0, also return the full image downscaled to this size (for global context)
         """
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
@@ -84,6 +88,8 @@ class WallSegmentationDataset(Dataset):
         self.merge_terrain = merge_terrain
         self.watabou_dir = Path(watabou_dir) if watabou_dir else None
         self.watabou_include_prob = watabou_include_prob
+        self.use_imagenet_norm = use_imagenet_norm
+        self.global_image_size = global_image_size
 
         self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0)
 
@@ -110,6 +116,16 @@ class WallSegmentationDataset(Dataset):
 
         # Build augmentation pipeline
         self.transform = self._build_transform()
+
+        # Build global image transform (normalize only, no augmentation)
+        if self.global_image_size > 0 and HAS_ALBUMENTATIONS:
+            if self.use_imagenet_norm:
+                gnorm = A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            else:
+                gnorm = A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
+            self.global_transform = A.Compose([gnorm, ToTensorV2()])
+        else:
+            self.global_transform = None
 
     def _normalize_name(self, name: str) -> str:
         """Normalize a name for fuzzy matching."""
@@ -247,6 +263,11 @@ class WallSegmentationDataset(Dataset):
         if not HAS_ALBUMENTATIONS:
             return None
 
+        if self.use_imagenet_norm:
+            norm = A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        else:
+            norm = A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
+
         if self.augment:
             return A.Compose([
                 # Geometric augmentations (applied to both image and mask)
@@ -272,12 +293,12 @@ class WallSegmentationDataset(Dataset):
                 ], p=0.3),
 
                 # Normalize and convert
-                A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
+                norm,
                 ToTensorV2()
             ])
         else:
             return A.Compose([
-                A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
+                norm,
                 ToTensorV2()
             ])
 
@@ -348,11 +369,23 @@ class WallSegmentationDataset(Dataset):
             image_tensor = torch.from_numpy(image_tile.transpose(2, 0, 1)).float() / 255.0
             mask_tensor = torch.from_numpy(mask_tile).long()
 
-        return {
+        result = {
             'image': image_tensor,
             'mask': mask_tensor,
             'name': sample['name'],
         }
+
+        # Add downscaled global image if requested
+        if self.global_image_size > 0:
+            gs = self.global_image_size
+            global_img = np.array(Image.fromarray(image).resize((gs, gs), Image.LANCZOS))
+            if self.global_transform is not None:
+                global_img = self.global_transform(image=global_img)['image']
+            else:
+                global_img = torch.from_numpy(global_img.transpose(2, 0, 1)).float() / 255.0
+            result['global_image'] = global_img
+
+        return result
 
 
 class ValidationDataset(Dataset):

@@ -49,7 +49,11 @@
       "Bash(bash hibernate_after_training.sh python -m primary_model_training.train --image-dir data/foundry_to_mask/Map_Images --mask-dir data/foundry_to_mask/line_masks --watabou-dir data/watabou_to_mask --watabou-prob 0.36 --merge-terrain --epochs 100 --batch-size 8)",
       "Bash(bash hibernate_after_training.sh python -m primary_model_training.train --image-dir data/foundry_to_mask/Map_Images --mask-dir data/foundry_to_mask/line_masks --watabou-dir data/watabou_to_mask --watabou-prob 0.36 --merge-terrain --epochs 1000 --early-stopping 50 --batch-size 8)",
       "Bash(bash hibernate_after_training.sh python -m primary_model_training.train --image-dir data/foundry_to_mask/Map_Images --mask-dir data/foundry_to_mask/line_masks --metadata-file data/foundry_to_mask/grid_metadata.json --watabou-dir data/watabou_to_mask --watabou-prob 0.36 --merge-terrain --epochs 1000 --early-stopping 50 --batch-size 8)",
-      "Bash(bash hibernate_after_training.sh python -u -m primary_model_training.train --image-dir data/foundry_to_mask/Map_Images --mask-dir data/foundry_to_mask/line_masks --metadata-file data/foundry_to_mask/grid_metadata.json --watabou-dir data/watabou_to_mask --watabou-prob 0.36 --merge-terrain --epochs 1000 --early-stopping 50 --batch-size 4 --num-workers 0)"
+      "Bash(bash hibernate_after_training.sh python -u -m primary_model_training.train --image-dir data/foundry_to_mask/Map_Images --mask-dir data/foundry_to_mask/line_masks --metadata-file data/foundry_to_mask/grid_metadata.json --watabou-dir data/watabou_to_mask --watabou-prob 0.36 --merge-terrain --epochs 1000 --early-stopping 50 --batch-size 4 --num-workers 0)",
+      "WebFetch(domain:ar5iv.labs.arxiv.org)",
+      "Bash(bash \"C:/Users/shini/InstaWall/hibernate_on_exit.sh\")",
+      "Bash(git reset:*)",
+      "Bash(git add:*)"
     ]
   }
 }

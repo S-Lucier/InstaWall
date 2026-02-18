@@ -311,7 +311,8 @@ class TilePipeline:
         tile_grid_cells: int = 8,
         tile_size: int = 512,
         overlap: float = 0.5,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        imagenet_norm: bool = False,
     ):
         """
         Args:
@@ -320,9 +321,11 @@ class TilePipeline:
             tile_size: Model input/output size
             overlap: Overlap ratio
             device: Torch device
+            imagenet_norm: Use ImageNet normalization instead of simple 0-1
         """
         self.model = model
         self.device = device
+        self.imagenet_norm = imagenet_norm
         self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap)
         self.stitcher = TileStitcher(tile_grid_cells, tile_size, overlap)
 
@@ -330,7 +333,8 @@ class TilePipeline:
         self,
         image: np.ndarray,
         grid_size: int,
-        batch_size: int = 4
+        batch_size: int = 4,
+        global_image: Optional[torch.Tensor] = None,
     ) -> np.ndarray:
         """
         Run tile-based prediction on a full image.
@@ -339,6 +343,7 @@ class TilePipeline:
             image: Input image (H, W, C), values 0-255
             grid_size: Grid cell size in pixels
             batch_size: Number of tiles to process at once
+            global_image: Optional pre-processed global context tensor (1, 3, H, W)
 
         Returns:
             Predicted class mask (H, W)
@@ -347,6 +352,10 @@ class TilePipeline:
 
         # Extract tiles
         tiles, tile_infos = self.extractor.extract_all_tiles(image, grid_size)
+
+        # ImageNet normalization constants
+        IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
         # Convert tiles to tensors
         tile_tensors = []
@@ -357,6 +366,10 @@ class TilePipeline:
                 t = t.unsqueeze(0)  # Add channel dim
             else:
                 t = t.permute(2, 0, 1)  # HWC -> CHW
+
+            if self.imagenet_norm:
+                t = (t - IMAGENET_MEAN) / IMAGENET_STD
+
             tile_tensors.append(t)
 
         # Batch inference
@@ -366,7 +379,14 @@ class TilePipeline:
         with torch.no_grad():
             for i in range(0, len(tile_tensors), batch_size):
                 batch = torch.stack(tile_tensors[i:i+batch_size]).to(self.device)
-                logits = self.model(batch)
+
+                kwargs = {}
+                if global_image is not None:
+                    # Expand global_image to match batch size
+                    bs = batch.shape[0]
+                    kwargs['global_image'] = global_image.expand(bs, -1, -1, -1)
+
+                logits = self.model(batch, **kwargs)
                 preds = logits.argmax(dim=1).cpu().numpy()
 
                 for pred in preds:

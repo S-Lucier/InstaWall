@@ -63,6 +63,14 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Pretrained model weights
+*.safetensors
+*.pkl
+primary_model_training/pretrained/cubicasa5k/test_output/
+
+# Windows reserved names
+nul
+
 # Temporary files
 tmp/
 temp/

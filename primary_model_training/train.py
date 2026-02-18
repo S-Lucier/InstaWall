@@ -35,7 +35,7 @@ def _show_power_limit_reminder():
     )
 
 from .config import Config
-from .model import WallSegmentationUNet, create_model
+from .model import create_model
 from .dataset import WallSegmentationDataset, ValidationDataset, create_dataloader
 
 
@@ -120,6 +120,56 @@ def compute_metrics(pred: torch.Tensor, target: torch.Tensor, num_classes: int) 
     }
 
 
+class EMAModel:
+    """Exponential Moving Average of model weights.
+
+    Maintains a shadow copy of the full model state_dict (parameters + buffers)
+    updated as: ema_param = decay * ema_param + (1 - decay) * model_param
+    Buffers (e.g. batch norm running stats) are copied directly.
+    """
+
+    def __init__(self, model: nn.Module, decay: float = 0.999):
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        self.param_names = set()
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.param_names.add(name)
+        for name, tensor in model.state_dict().items():
+            self.shadow[name] = tensor.clone()
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        for name, tensor in model.state_dict().items():
+            if name in self.param_names:
+                # EMA for trainable parameters
+                self.shadow[name].mul_(self.decay).add_(
+                    tensor, alpha=1.0 - self.decay
+                )
+            else:
+                # Copy buffers directly (batch norm running stats, etc.)
+                self.shadow[name].copy_(tensor)
+
+    def apply_shadow(self, model: nn.Module):
+        """Swap model state with EMA state (for validation/inference)."""
+        self.backup = {k: v.clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(self.shadow)
+
+    def restore(self, model: nn.Module):
+        """Restore original model state after validation."""
+        model.load_state_dict(self.backup)
+        self.backup = {}
+
+    def state_dict(self):
+        return {k: v.cpu() for k, v in self.shadow.items()}
+
+    def load_state_dict(self, state_dict):
+        for k, v in state_dict.items():
+            if k in self.shadow:
+                self.shadow[k].copy_(v.to(self.shadow[k].device))
+
+
 class Trainer:
     """Training manager."""
 
@@ -161,6 +211,8 @@ class Trainer:
             merge_terrain=config.merge_terrain,
             watabou_dir=config.watabou_dir,
             watabou_include_prob=config.watabou_include_prob,
+            use_imagenet_norm=config.use_imagenet_norm,
+            global_image_size=config.global_image_size if config.use_global_context else 0,
         )
 
         self.train_loader = DataLoader(
@@ -206,6 +258,12 @@ class Trainer:
         # Mixed precision training
         self.scaler = GradScaler() if self.device.type == 'cuda' else None
 
+        # EMA
+        self.ema = None
+        if config.ema_decay > 0:
+            self.ema = EMAModel(self.model, decay=config.ema_decay)
+            print(f"EMA enabled with decay={config.ema_decay}")
+
         # Tracking
         self.best_loss = float('inf')
         self.best_iou = 0.0
@@ -240,6 +298,10 @@ class Trainer:
         self.best_loss = checkpoint.get('best_loss', float('inf'))
         self.best_iou = checkpoint.get('best_iou', 0.0)
 
+        # Restore EMA state if available
+        if self.ema is not None and 'ema_state_dict' in checkpoint:
+            self.ema.load_state_dict(checkpoint['ema_state_dict'])
+
         # Reload history if available
         history_path = Path(path).parent / 'history.json'
         if history_path.exists():
@@ -247,6 +309,13 @@ class Trainer:
                 self.history = json.load(f)
 
         print(f"  Resumed at epoch {self.start_epoch}, best IoU: {self.best_iou:.4f}")
+
+    def _model_kwargs(self, batch: Dict) -> Dict:
+        """Build extra keyword arguments for model forward pass."""
+        kwargs = {}
+        if self.config.use_global_context and 'global_image' in batch:
+            kwargs['global_image'] = batch['global_image'].to(self.device)
+        return kwargs
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train for one epoch."""
@@ -262,23 +331,28 @@ class Trainer:
         for batch_idx, batch in enumerate(self.train_loader):
             images = batch['image'].to(self.device)
             masks = batch['mask'].to(self.device)
+            extra_kwargs = self._model_kwargs(batch)
 
             self.optimizer.zero_grad()
 
             # Forward pass with mixed precision
             if self.scaler is not None:
                 with autocast():
-                    outputs = self.model(images)
+                    outputs = self.model(images, **extra_kwargs)
                     loss = self.criterion(outputs, masks)
 
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                outputs = self.model(images)
+                outputs = self.model(images, **extra_kwargs)
                 loss = self.criterion(outputs, masks)
                 loss.backward()
                 self.optimizer.step()
+
+            # Update EMA
+            if self.ema is not None:
+                self.ema.update(self.model)
 
             # Metrics
             total_loss += loss.item()
@@ -307,7 +381,10 @@ class Trainer:
         }
 
     def validate(self) -> Dict[str, float]:
-        """Run validation."""
+        """Run validation (uses EMA weights if available)."""
+        if self.ema is not None:
+            self.ema.apply_shadow(self.model)
+
         self.model.eval()
 
         total_loss = 0.0
@@ -318,8 +395,9 @@ class Trainer:
             for batch in self.train_loader:  # TODO: Use separate validation set
                 images = batch['image'].to(self.device)
                 masks = batch['mask'].to(self.device)
+                extra_kwargs = self._model_kwargs(batch)
 
-                outputs = self.model(images)
+                outputs = self.model(images, **extra_kwargs)
                 loss = self.criterion(outputs, masks)
 
                 total_loss += loss.item()
@@ -334,18 +412,23 @@ class Trainer:
                 if num_batches >= 50:
                     break
 
+        if self.ema is not None:
+            self.ema.restore(self.model)
+
         return {
             'loss': total_loss / max(num_batches, 1),
             'mean_iou': np.mean(all_ious) if all_ious else 0.0,
         }
 
     def _snapshot_best(self):
-        """Copy current model weights to CPU RAM as the best checkpoint."""
-        import copy
-        self.best_state = copy.deepcopy(self.model.state_dict())
-        # Move all tensors to CPU to free VRAM
-        for k in self.best_state:
-            self.best_state[k] = self.best_state[k].cpu()
+        """Copy current best weights to CPU RAM (EMA weights if available)."""
+        if self.ema is not None:
+            self.best_state = self.ema.state_dict()  # already returns CPU tensors
+        else:
+            import copy
+            self.best_state = copy.deepcopy(self.model.state_dict())
+            for k in self.best_state:
+                self.best_state[k] = self.best_state[k].cpu()
         self.best_epoch = self.start_epoch  # updated by caller
 
     def save_checkpoint(self, epoch: int, is_best: bool = False):
@@ -367,6 +450,8 @@ class Trainer:
             }
             if self.scheduler is not None:
                 checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+            if self.ema is not None:
+                checkpoint['ema_state_dict'] = self.ema.state_dict()
 
             torch.save(checkpoint, self.output_dir / 'checkpoint_latest.pt')
             torch.save(checkpoint, self.output_dir / f'checkpoint_epoch{epoch+1}.pt')
@@ -394,6 +479,8 @@ class Trainer:
         }
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        if self.ema is not None:
+            checkpoint['ema_state_dict'] = self.ema.state_dict()
 
         torch.save(checkpoint, self.output_dir / 'checkpoint_latest.pt')
 
@@ -489,7 +576,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train wall segmentation model')
 
     # Data paths
-    parser.add_argument('--image-dir', default='data/foundry_to_mask',
+    parser.add_argument('--image-dir', default='data/foundry_to_mask/Map_Images',
                         help='Directory with battlemap images')
     parser.add_argument('--mask-dir', default='data/foundry_to_mask/line_masks',
                         help='Directory with mask files')
@@ -517,10 +604,16 @@ def main():
                         help='Model input size')
 
     # Model
+    parser.add_argument('--model', default='unet',
+                        choices=['unet', 'segformer', 'segformer_gc'],
+                        help='Model architecture (default: unet)')
+    parser.add_argument('--segformer-variant', default='b0',
+                        choices=['b0', 'b1', 'b2', 'b3', 'b4', 'b5'],
+                        help='SegFormer variant (default: b0)')
     parser.add_argument('--no-aspp', action='store_true',
-                        help='Disable ASPP in bottleneck')
+                        help='Disable ASPP in bottleneck (UNet only)')
     parser.add_argument('--no-attention', action='store_true',
-                        help='Disable attention gates')
+                        help='Disable attention gates (UNet only)')
 
     # Classes
     parser.add_argument('--merge-terrain', action='store_true',
@@ -531,6 +624,10 @@ def main():
                         help='Watabou data directory (contains watabou_images/, watabou_edge_mask/, watabou_recessed_mask/)')
     parser.add_argument('--watabou-prob', type=float, default=0.36,
                         help='Per-epoch inclusion probability for Watabou maps (default: 0.36)')
+
+    # EMA
+    parser.add_argument('--ema-decay', type=float, default=0.999,
+                        help='EMA decay rate (0 = disabled, default: 0.999)')
 
     # Resume
     parser.add_argument('--resume', default=None,
@@ -550,6 +647,8 @@ def main():
         mask_dir=args.mask_dir,
         metadata_file=args.metadata_file,
         output_dir=args.output_dir,
+        model_type=args.model,
+        segformer_variant=args.segformer_variant,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.lr,
@@ -564,6 +663,7 @@ def main():
         watabou_dir=args.watabou_dir,
         watabou_include_prob=args.watabou_prob,
         early_stopping_patience=args.early_stopping,
+        ema_decay=args.ema_decay,
     )
 
     # Train
