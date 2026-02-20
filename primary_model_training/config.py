@@ -107,6 +107,14 @@ class Config:
     # EMA decay rate (0 = disabled, 0.999 typical for segmentation)
     ema_decay: float = 0.999
 
+    # Focal loss (replaces cross-entropy). gamma=0 is equivalent to cross-entropy.
+    use_focal_loss: bool = False
+    focal_gamma: float = 2.0
+
+    # Mask dilation radius in pixels (training only). 0 = disabled.
+    # Expands thin wall lines so the model receives stronger gradient signal.
+    mask_dilation: int = 0
+
     # Learning rate scheduler
     scheduler: str = "cosine"  # "cosine", "step", "plateau"
 

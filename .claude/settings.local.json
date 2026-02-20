@@ -53,7 +53,9 @@
       "WebFetch(domain:ar5iv.labs.arxiv.org)",
       "Bash(bash \"C:/Users/shini/InstaWall/hibernate_on_exit.sh\")",
       "Bash(git reset:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(cmd.exe /C \"dir /s /b C:\\\\Users\\\\shini\\\\InstaWall\\\\*watabou* 2>nul\")",
+      "Bash(cmd.exe /C \"dir C:\\\\Users\\\\shini\\\\InstaWall\\\\data\\\\watabou_to_mask\\\\ 2>&1\")"
     ]
   }
 }

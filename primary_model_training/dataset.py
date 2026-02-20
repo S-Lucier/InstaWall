@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
+from scipy.ndimage import binary_dilation
 
 try:
     import albumentations as A
@@ -59,6 +60,7 @@ class WallSegmentationDataset(Dataset):
         watabou_include_prob: float = 0.36,
         use_imagenet_norm: bool = False,
         global_image_size: int = 0,
+        mask_dilation: int = 0,
     ):
         """
         Args:
@@ -90,6 +92,13 @@ class WallSegmentationDataset(Dataset):
         self.watabou_include_prob = watabou_include_prob
         self.use_imagenet_norm = use_imagenet_norm
         self.global_image_size = global_image_size
+        self.mask_dilation = mask_dilation
+
+        # Pre-build dilation structuring element
+        if mask_dilation > 0:
+            r = mask_dilation
+            y, x = np.ogrid[-r:r+1, -r:r+1]
+            self._dilation_struct = (x*x + y*y) <= r*r  # circular kernel
 
         self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0)
 
@@ -114,8 +123,9 @@ class WallSegmentationDataset(Dataset):
         self.active_samples = list(self.all_samples)
         self.resample_for_epoch()
 
-        # Build augmentation pipeline
+        # Build augmentation pipelines
         self.transform = self._build_transform()
+        self.watabou_transform = self._build_watabou_transform()
 
         # Build global image transform (normalize only, no augmentation)
         if self.global_image_size > 0 and HAS_ALBUMENTATIONS:
@@ -126,6 +136,22 @@ class WallSegmentationDataset(Dataset):
             self.global_transform = A.Compose([gnorm, ToTensorV2()])
         else:
             self.global_transform = None
+
+    def _dilate_mask(self, mask: np.ndarray) -> np.ndarray:
+        """Expand non-background classes outward, writing only into background pixels.
+
+        Each class is dilated independently so class boundaries are preserved —
+        door pixels are never overwritten by wall dilation and vice versa.
+        """
+        result = mask.copy()
+        background = mask == 0
+        num_classes = int(mask.max()) + 1
+        for cls in range(1, num_classes):
+            expanded = binary_dilation(mask == cls, structure=self._dilation_struct)
+            # Only write into background — never overwrite other classes
+            result[expanded & background] = cls
+            background = result == 0  # update remaining background
+        return result
 
     def _normalize_name(self, name: str) -> str:
         """Normalize a name for fuzzy matching."""
@@ -221,22 +247,22 @@ class WallSegmentationDataset(Dataset):
         return samples
 
     def _find_watabou_samples(self) -> List[Dict]:
-        """Find Watabou image-mask pairs (direct filename match, edge masks only)."""
+        """Find Watabou image-mask pairs (direct filename match, edge masks)."""
         samples = []
         image_dir = self.watabou_dir / 'watabou_images'
-        edge_dir = self.watabou_dir / 'watabou_edge_mask'
+        mask_dir = self.watabou_dir / 'watabou_edge_mask'
 
         for image_path in sorted(image_dir.glob('*.png')):
             name = image_path.stem
-            edge_mask = edge_dir / f"{name}.png"
+            mask = mask_dir / f"{name}.png"
 
-            if not edge_mask.exists():
+            if not mask.exists():
                 print(f"Warning: No edge mask found for watabou map {name}")
                 continue
 
             samples.append({
                 'image_path': str(image_path),
-                'mask_path': str(edge_mask),
+                'mask_path': str(mask),
                 'name': name,
                 'grid_size': 70,  # Watabou fixed grid size
                 'source': 'watabou',
@@ -257,6 +283,55 @@ class WallSegmentationDataset(Dataset):
                 if random.random() > self.watabou_include_prob:
                     continue
             self.active_samples.append(sample)
+
+    def _build_watabou_transform(self):
+        """Heavier augmentation pipeline for Watabou (vector art) maps.
+
+        Watabou maps have a very different visual style (flat/vector art) compared
+        to Foundry photorealistic maps. Heavy augmentation prevents overfitting to
+        the vector art style and improves generalisation.
+        """
+        if not HAS_ALBUMENTATIONS:
+            return self._build_transform()
+
+        if self.use_imagenet_norm:
+            norm = A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        else:
+            norm = A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
+
+        if self.augment:
+            return A.Compose([
+                # Geometric
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomRotate90(p=0.5),
+
+                # Heavy colour: wide brightness/contrast/saturation/hue swings
+                A.ColorJitter(
+                    brightness=0.6,
+                    contrast=0.6,
+                    saturation=0.5,
+                    hue=0.2,
+                    p=0.8,
+                ),
+                A.RandomGamma(gamma_limit=(40, 200), p=0.5),
+
+                # Occasionally convert to greyscale (forces texture focus)
+                A.ToGray(p=0.2),
+
+                # Quality / texture noise
+                A.OneOf([
+                    A.GaussNoise(std_range=(0.03, 0.08), p=1.0),
+                    A.GaussianBlur(blur_limit=(3, 7), p=1.0),
+                    A.ImageCompression(quality_range=(30, 80), p=1.0),
+                    A.Downscale(scale_range=(0.5, 0.8), p=1.0),
+                ], p=0.5),
+
+                norm,
+                ToTensorV2()
+            ])
+        else:
+            return A.Compose([norm, ToTensorV2()])
 
     def _build_transform(self):
         """Build augmentation pipeline."""
@@ -355,9 +430,14 @@ class WallSegmentationDataset(Dataset):
         image_tile = self.extractor.extract_tile(image, tile_info, grid_size)
         mask_tile = self.extractor.extract_tile(mask, tile_info, grid_size)
 
-        # Apply augmentations
-        if self.transform is not None:
-            transformed = self.transform(image=image_tile, mask=mask_tile)
+        # Dilate mask for training (expands thin wall lines for stronger gradient signal)
+        if self.mask_dilation > 0:
+            mask_tile = self._dilate_mask(mask_tile)
+
+        # Apply augmentations (heavier pipeline for Watabou vector art)
+        transform = self.watabou_transform if sample['source'] == 'watabou' else self.transform
+        if transform is not None:
+            transformed = transform(image=image_tile, mask=mask_tile)
             image_tensor = transformed['image']
             mask_tensor = transformed['mask']
             # ToTensorV2 may return tensor or numpy depending on version

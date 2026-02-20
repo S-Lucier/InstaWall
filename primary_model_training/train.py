@@ -37,6 +37,7 @@ def _show_power_limit_reminder():
 from .config import Config
 from .model import create_model
 from .dataset import WallSegmentationDataset, ValidationDataset, create_dataloader
+from .losses import FocalLoss
 
 
 def set_seed(seed: int):
@@ -213,6 +214,7 @@ class Trainer:
             watabou_include_prob=config.watabou_include_prob,
             use_imagenet_norm=config.use_imagenet_norm,
             global_image_size=config.global_image_size if config.use_global_context else 0,
+            mask_dilation=config.mask_dilation,
         )
 
         self.train_loader = DataLoader(
@@ -230,7 +232,14 @@ class Trainer:
         else:
             class_weights = compute_class_weights(self.train_dataset, config.num_classes)
 
-        self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+        if config.use_focal_loss:
+            self.criterion = FocalLoss(
+                weight=class_weights.to(self.device),
+                gamma=config.focal_gamma,
+            )
+            print(f"Using Focal Loss (gamma={config.focal_gamma})")
+        else:
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
 
         # Optimizer
         self.optimizer = optim.AdamW(
@@ -494,14 +503,40 @@ class Trainer:
             }
             torch.save(best_checkpoint, self.output_dir / 'checkpoint_best.pt')
 
+    def _write_stop_bat(self):
+        """Write a stop_training.bat to the output dir for graceful early exit."""
+        stop_file = self.output_dir / 'STOP'
+        bat_path = self.output_dir / 'stop_training.bat'
+        bat_path.write_text(
+            f'@echo off\n'
+            f'echo Requesting graceful stop after current epoch...\n'
+            f'echo. > "{stop_file}"\n'
+            f'echo Done. Training will save and exit at end of current epoch.\n'
+            f'pause\n',
+            encoding='utf-8',
+        )
+        return bat_path
+
+    def _check_stop_requested(self) -> bool:
+        """Return True (and remove sentinel) if a graceful stop was requested."""
+        stop_file = self.output_dir / 'STOP'
+        if stop_file.exists():
+            stop_file.unlink()
+            return True
+        return False
+
     def train(self):
         """Main training loop."""
         # Remind user to set GPU power limit
         if self.device.type == 'cuda' and os.name == 'nt':
             _show_power_limit_reminder()
 
+        # Write stop helper
+        bat_path = self._write_stop_bat()
+
         print(f"\nStarting training for {self.config.epochs} epochs")
         print(f"Output directory: {self.output_dir}")
+        print(f"To stop early: run  {bat_path}")
         print("=" * 60)
 
         start_time = time.time()
@@ -553,6 +588,11 @@ class Trainer:
             patience = self.config.early_stopping_patience
             if patience > 0 and self.epochs_since_best >= patience:
                 print(f"\nEarly stopping: no improvement for {patience} epochs")
+                break
+
+            # Graceful stop via sentinel file
+            if self._check_stop_requested():
+                print("\nStop requested — saving and exiting gracefully.")
                 break
 
             # Save history (same interval as checkpoints to reduce SSD writes)
@@ -625,6 +665,20 @@ def main():
     parser.add_argument('--watabou-prob', type=float, default=0.36,
                         help='Per-epoch inclusion probability for Watabou maps (default: 0.36)')
 
+    # Loss function
+    parser.add_argument('--focal-loss', action='store_true',
+                        help='Use focal loss instead of cross-entropy')
+    parser.add_argument('--focal-gamma', type=float, default=2.0,
+                        help='Focal loss gamma (default: 2.0)')
+
+    # Mask dilation
+    parser.add_argument('--mask-dilation', type=int, default=0,
+                        help='Dilate training masks by N pixels to strengthen wall signal (default: 0)')
+
+    # Checkpointing
+    parser.add_argument('--save-interval', type=int, default=50,
+                        help='Save checkpoint every N epochs (default: 50)')
+
     # EMA
     parser.add_argument('--ema-decay', type=float, default=0.999,
                         help='EMA decay rate (0 = disabled, default: 0.999)')
@@ -663,7 +717,11 @@ def main():
         watabou_dir=args.watabou_dir,
         watabou_include_prob=args.watabou_prob,
         early_stopping_patience=args.early_stopping,
+        save_interval=args.save_interval,
         ema_decay=args.ema_decay,
+        use_focal_loss=args.focal_loss,
+        focal_gamma=args.focal_gamma,
+        mask_dilation=args.mask_dilation,
     )
 
     # Train
