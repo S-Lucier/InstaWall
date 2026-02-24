@@ -458,7 +458,7 @@ class WallSegmentationDataset(Dataset):
         # Add downscaled global image if requested
         if self.global_image_size > 0:
             gs = self.global_image_size
-            global_img = np.array(Image.fromarray(image).resize((gs, gs), Image.LANCZOS))
+            global_img = np.array(Image.fromarray(image).resize((gs, gs), Image.BILINEAR))
             if self.global_transform is not None:
                 global_img = self.global_transform(image=global_img)['image']
             else:

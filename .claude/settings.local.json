@@ -55,7 +55,10 @@
       "Bash(git reset:*)",
       "Bash(git add:*)",
       "Bash(cmd.exe /C \"dir /s /b C:\\\\Users\\\\shini\\\\InstaWall\\\\*watabou* 2>nul\")",
-      "Bash(cmd.exe /C \"dir C:\\\\Users\\\\shini\\\\InstaWall\\\\data\\\\watabou_to_mask\\\\ 2>&1\")"
+      "Bash(cmd.exe /C \"dir C:\\\\Users\\\\shini\\\\InstaWall\\\\data\\\\watabou_to_mask\\\\ 2>&1\")",
+      "Bash(wmic process where \"name=''python.exe''\" get processid,creationdate)",
+      "Bash(cmd /c:*)",
+      "Bash(wmic:*)"
     ]
   }
 }

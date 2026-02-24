@@ -33,7 +33,9 @@ class FocalLoss(nn.Module):
         reduction: str = 'mean',
     ):
         super().__init__()
-        self.register_buffer('weight', weight)
+        # Keep weight on CPU to avoid CUDA IPC issues with DataLoader workers on Windows.
+        # It is moved to the correct device lazily in forward().
+        self._weight_cpu = weight.cpu() if weight is not None else None
         self.gamma = gamma
         self.reduction = reduction
 
@@ -45,8 +47,9 @@ class FocalLoss(nn.Module):
         Returns:
             Scalar loss (or per-pixel tensor if reduction='none')
         """
+        weight = self._weight_cpu.to(inputs.device) if self._weight_cpu is not None else None
         # Per-pixel CE loss (unreduced) — shape (B, H, W)
-        ce = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        ce = F.cross_entropy(inputs, targets, weight=weight, reduction='none')
 
         # p_correct = e^{-CE}  (probability assigned to the correct class)
         pt = torch.exp(-ce)

@@ -224,6 +224,7 @@ class Trainer:
             num_workers=config.num_workers,
             pin_memory=True,
             drop_last=True,
+            prefetch_factor=4 if config.num_workers > 0 else None,
         )
 
         # Compute or use provided class weights
@@ -470,10 +471,15 @@ class Trainer:
                 best_checkpoint = {
                     'epoch': self.best_epoch,
                     'model_state_dict': self.best_state,
+                    'optimizer_state_dict': self.optimizer.state_dict(),
                     'best_loss': self.best_loss,
                     'best_iou': self.best_iou,
                     'config': vars(self.config),
                 }
+                if self.scheduler is not None:
+                    best_checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+                if self.ema is not None:
+                    best_checkpoint['ema_state_dict'] = self.ema.state_dict()
                 torch.save(best_checkpoint, self.output_dir / 'checkpoint_best.pt')
 
     def _save_final_checkpoint(self, epoch: int):
@@ -497,10 +503,15 @@ class Trainer:
             best_checkpoint = {
                 'epoch': self.best_epoch,
                 'model_state_dict': self.best_state,
+                'optimizer_state_dict': self.optimizer.state_dict(),
                 'best_loss': self.best_loss,
                 'best_iou': self.best_iou,
                 'config': vars(self.config),
             }
+            if self.scheduler is not None:
+                best_checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+            if self.ema is not None:
+                best_checkpoint['ema_state_dict'] = self.ema.state_dict()
             torch.save(best_checkpoint, self.output_dir / 'checkpoint_best.pt')
 
     def _write_stop_bat(self):
@@ -595,10 +606,9 @@ class Trainer:
                 print("\nStop requested — saving and exiting gracefully.")
                 break
 
-            # Save history (same interval as checkpoints to reduce SSD writes)
-            if (epoch + 1) % self.config.save_interval == 0:
-                with open(self.output_dir / 'history.json', 'w') as f:
-                    json.dump(self.history, f, indent=2)
+            # Save history every epoch (small file, lets the watcher detect progress)
+            with open(self.output_dir / 'history.json', 'w') as f:
+                json.dump(self.history, f, indent=2)
 
         # Final saves (history + pending best/latest checkpoint)
         with open(self.output_dir / 'history.json', 'w') as f:
