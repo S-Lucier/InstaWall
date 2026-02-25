@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -370,6 +371,86 @@ def export_foundry_walls(
     print(f"Exported {len(segments)} wall segments to {output_path}")
 
 
+def filter_small_components(mask: np.ndarray, grid_size: int, min_size: float = 0.5) -> np.ndarray:
+    """
+    Remove small isolated predictions that are likely false positives (statues, rocks, etc.).
+
+    For each non-background class:
+      1. Dilate slightly to bridge small gaps in spotty predictions, so a broken
+         wall line isn't split into many tiny components and filtered out.
+      2. Find connected components on the gap-bridged mask.
+      3. For each component, fill interior holes before measuring area — this
+         ensures a hollow ring of wall pixels (e.g. room perimeter) is measured
+         by its enclosed area, not just the pixel count of the ring itself.
+      4. Discard components whose filled area is below min_size * grid_size².
+
+    Args:
+        mask: HxW uint8 array of predicted class indices (0=background).
+        grid_size: Grid cell size in pixels in the full image coordinate space.
+        min_size: Minimum component size as a fraction of one grid cell squared.
+                  0.5 means anything smaller than half a grid cell² is removed.
+
+    Returns:
+        Filtered mask with small components set to background (0).
+    """
+    result = mask.copy()
+    min_area = min_size * (grid_size ** 2)
+    min_length = min_size * grid_size  # linear threshold for elongated shapes
+
+    # Gap-bridging kernel: ~5% of a grid cell, at least 3px
+    gap_px = max(3, int(grid_size * 0.05))
+    gap_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (gap_px, gap_px))
+
+    for cls in np.unique(mask):
+        if cls == 0:
+            continue
+
+        binary = (mask == cls).astype(np.uint8)
+
+        # Bridge small gaps so spotty walls count as one component
+        bridged = cv2.dilate(binary, gap_kernel, iterations=1)
+
+        # Find components on the gap-bridged version
+        num_labels, labels = cv2.connectedComponents(bridged)
+
+        # Get stats for all components at once (faster than per-component loop)
+        _, _, stats, _ = cv2.connectedComponentsWithStats(bridged)
+
+        for label_id in range(1, num_labels):
+            component = (labels == label_id).astype(np.uint8)
+
+            # Crop to bounding box before hole-filling (much faster on large images)
+            x, y, bw, bh, _ = stats[label_id]
+            pad = gap_px + 1
+            y0, y1 = max(0, y - pad), min(bridged.shape[0], y + bh + pad)
+            x0, x1 = max(0, x - pad), min(bridged.shape[1], x + bw + pad)
+            crop = component[y0:y1, x0:x1]
+
+            # Fill interior holes in the crop — handles hollow blobs.
+            # Any background region in the crop that doesn't touch the crop border
+            # is enclosed by the component and counts toward its effective area.
+            inv_crop = 1 - crop
+            _, hole_labels = cv2.connectedComponents(inv_crop)
+            border_ids = set(hole_labels[0, :].tolist() +
+                             hole_labels[-1, :].tolist() +
+                             hole_labels[:, 0].tolist() +
+                             hole_labels[:, -1].tolist())
+            filled_crop = crop.copy()
+            for hole_id in np.unique(hole_labels):
+                if hole_id > 0 and hole_id not in border_ids:
+                    filled_crop[hole_labels == hole_id] = 1
+            filled_area = int(filled_crop.sum())
+
+            # Keep if large enough by area OR long enough in any direction.
+            # Long thin walls have small area but large max-dimension;
+            # small objects (statues, rocks) are small in both.
+            max_dim = max(bw, bh)
+            if filled_area < min_area and max_dim < min_length:
+                result[component.astype(bool) & binary.astype(bool)] = 0
+
+    return result
+
+
 def process_image(
     checkpoint_path: str,
     image_path: str,
@@ -383,6 +464,7 @@ def process_image(
     overlap: float = 0.5,
     device: str = 'cuda',
     tta_passes: int = 0,
+    min_component_size: float = 0.0,
 ):
     """
     Process a single image and save outputs.
@@ -431,6 +513,13 @@ def process_image(
     else:
         print("  Running tile-based prediction...")
         mask = predict_mask(model, image, grid_size, **predict_kwargs)
+
+    # Filter small components (statues, rocks, isolated noise)
+    if min_component_size > 0:
+        before = (mask > 0).sum()
+        mask = filter_small_components(mask, grid_size, min_size=min_component_size)
+        removed = before - (mask > 0).sum()
+        print(f"  Component filter ({min_component_size} grid²): removed {removed:,} px")
 
     # Output directory
     image_path = Path(image_path)
@@ -510,6 +599,13 @@ def main():
     parser.add_argument('--tta', type=int, default=0, metavar='N',
                         help='Test-time augmentation passes (0=off, 8=full)')
 
+    # Post-processing
+    parser.add_argument('--min-component-size', type=float, default=0.0, metavar='FRAC',
+                        help='Remove predicted regions smaller than FRAC * grid_size² pixels. '
+                             'Bridges small gaps and fills hollow blobs before measuring. '
+                             'E.g. 0.5 removes anything under half a grid cell in area. '
+                             '0 = disabled (default).')
+
     # Device
     parser.add_argument('--cpu', action='store_true',
                         help='Use CPU instead of GPU')
@@ -531,6 +627,7 @@ def main():
         overlap=args.overlap,
         device=device,
         tta_passes=args.tta,
+        min_component_size=args.min_component_size,
     )
 
 

@@ -537,6 +537,19 @@ def process_single_file(
     else:
         mask = generate_mask_hybrid(scene, wall_thickness)
 
+    # If the background image exists and its dimensions differ from the scene dimensions,
+    # the image was scaled to fill the scene content area. Resize the mask to match the
+    # image so that mask pixels align 1:1 with image pixels during training.
+    if image_path:
+        try:
+            img = Image.open(image_path)
+            img_w, img_h = img.size
+            if (img_w, img_h) != (scene.width, scene.height):
+                print(f"  Image size {img_w}x{img_h} differs from scene {scene.width}x{scene.height} — resizing mask to match image")
+                mask = np.array(Image.fromarray(mask).resize((img_w, img_h), Image.NEAREST))
+        except Exception as e:
+            print(f"  Warning: could not check image size for mask resize: {e}")
+
     # Determine output paths
     json_path = Path(json_path)
     if output_dir:

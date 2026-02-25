@@ -1,0 +1,25 @@
+I talked to a a friend at a meetup and they suggested the following.
+Give me your thoughts on each and write them into a plan with the same name as this file in C:\Users\shini\InstaWall\Plans
+
+
+Furniture removal before wall model (sounds quite hard to do, basically an entire seperate ml model I'd have to make,
+same level of challenge as making the wall model in the first place
+
+Convert images into black and white before running model (trained on BW images as well) - the idea being that the model works with
+simpler data. I don't know if this will work (real nuance may be lost) but it seems worth trying at some point.
+
+User input of texture(s) to match as walls - have additional input image(s) for both training and inference that is a picture(s)
+of walls and doors on the map. I'm not sure how to implement this but it sounds like a gamechanger to me.
+
+Train w/out focal loss -> train with focal loss to learn new walks -> train w/out focal loss to force accuracy on learned
+Focal loss didn't work, made model give too many false positives for the false negatives it reduced. Friend suggests that above
+method might work
+
+Freeze weights in early layers, leave later ones to change - idea being freeze general knowledge and make it tweak specifics.
+Do this after training for some time. Maybe could train model normally then do this and add texture inputs from user,
+an attempt to train the model to have some general idea of what a wall is and then point it at a specific texture the user provides
+
+Change additional non-masked context beyond title to just be a smaller tile of map instead of whole thing, and remove overlap of
+current 8x8 map tiles since the model can already "see" the walls around the area it's masking so no need to average out it's
+guesses on the edge of where it's masking. This can also be paired with removing the small image of the whole map that gets fed in
+as context (I belive it's a 256x256 picture)

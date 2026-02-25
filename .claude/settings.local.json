@@ -58,7 +58,10 @@
       "Bash(cmd.exe /C \"dir C:\\\\Users\\\\shini\\\\InstaWall\\\\data\\\\watabou_to_mask\\\\ 2>&1\")",
       "Bash(wmic process where \"name=''python.exe''\" get processid,creationdate)",
       "Bash(cmd /c:*)",
-      "Bash(wmic:*)"
+      "Bash(wmic:*)",
+      "Bash(python3:*)",
+      "Bash(cd:*)",
+      "Bash(grep:*)"
     ]
   }
 }
