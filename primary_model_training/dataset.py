@@ -61,6 +61,8 @@ class WallSegmentationDataset(Dataset):
         use_imagenet_norm: bool = False,
         global_image_size: int = 0,
         mask_dilation: int = 0,
+        grayscale_aug: bool = True,
+        tile_context_cells: int = 1,
     ):
         """
         Args:
@@ -78,6 +80,8 @@ class WallSegmentationDataset(Dataset):
             watabou_include_prob: Per-epoch inclusion probability for each Watabou map
             use_imagenet_norm: Use ImageNet normalization (for SegFormer) instead of 0-1 range
             global_image_size: If >0, also return the full image downscaled to this size (for global context)
+            grayscale_aug: Randomly convert tiles to greyscale (p=0.3) during training
+            tile_context_cells: Grid cells of context border included around each tile (0 = disabled)
         """
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
@@ -93,6 +97,8 @@ class WallSegmentationDataset(Dataset):
         self.use_imagenet_norm = use_imagenet_norm
         self.global_image_size = global_image_size
         self.mask_dilation = mask_dilation
+        self.grayscale_aug = grayscale_aug
+        self.tile_context_cells = tile_context_cells
 
         # Pre-build dilation structuring element
         if mask_dilation > 0:
@@ -100,7 +106,8 @@ class WallSegmentationDataset(Dataset):
             y, x = np.ogrid[-r:r+1, -r:r+1]
             self._dilation_struct = (x*x + y*y) <= r*r  # circular kernel
 
-        self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0)
+        self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap=0.0,
+                                       context_cells=tile_context_cells)
 
         # Load metadata if provided
         self.metadata = {}
@@ -344,7 +351,7 @@ class WallSegmentationDataset(Dataset):
             norm = A.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0])
 
         if self.augment:
-            return A.Compose([
+            transforms = [
                 # Geometric augmentations (applied to both image and mask)
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
@@ -359,7 +366,14 @@ class WallSegmentationDataset(Dataset):
                     p=0.5
                 ),
                 A.RandomGamma(gamma_limit=(60, 140), p=0.3),
+            ]
 
+            # Greyscale augmentation: teaches the model to use shape/texture
+            # rather than colour. Watabou transform already has its own ToGray.
+            if self.grayscale_aug:
+                transforms.append(A.ToGray(p=0.3))
+
+            transforms += [
                 # Quality augmentations (image only)
                 A.OneOf([
                     A.GaussNoise(std_range=(0.02, 0.05), p=1.0),
@@ -370,7 +384,9 @@ class WallSegmentationDataset(Dataset):
                 # Normalize and convert
                 norm,
                 ToTensorV2()
-            ])
+            ]
+
+            return A.Compose(transforms)
         else:
             return A.Compose([
                 norm,

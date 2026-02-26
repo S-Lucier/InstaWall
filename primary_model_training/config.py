@@ -111,9 +111,21 @@ class Config:
     use_focal_loss: bool = False
     focal_gamma: float = 2.0
 
+    # Focal loss phase schedule: CE → Focal → CE curriculum (default off).
+    # focal_schedule_start: epoch to switch from CE to Focal.
+    # focal_schedule_end:   epoch to switch back to CE (0 = never switch back).
+    focal_loss_schedule: bool = False
+    focal_schedule_start: int = 15
+    focal_schedule_end: int = 30
+
     # Mask dilation radius in pixels (training only). 0 = disabled.
     # Expands thin wall lines so the model receives stronger gradient signal.
     mask_dilation: int = 0
+
+    # Context border tiling: number of extra grid cells included on each side of
+    # each tile as context. 0 = disabled (old overlap-based stitching).
+    # At inference, overlap auto-set to 0.0 when context_cells > 0.
+    tile_context_cells: int = 1
 
     # Learning rate scheduler
     scheduler: str = "cosine"  # "cosine", "step", "plateau"
@@ -138,6 +150,10 @@ class Config:
     # ==========================================================================
     # Augmentation
     # ==========================================================================
+
+    # Randomly convert tiles to greyscale during training (probability 0.3).
+    # Reduces colour bias across different map art styles.
+    grayscale_aug: bool = True
 
     # Whether to apply augmentations during training
     augment: bool = True
@@ -181,7 +197,7 @@ class Config:
         """Validate configuration after initialization."""
         assert self.model_type in ("unet", "segformer", "segformer_gc"), \
             f"model_type must be 'unet', 'segformer', or 'segformer_gc', got '{self.model_type}'"
-        assert 0 < self.tile_overlap < 1, "tile_overlap must be between 0 and 1"
+        assert 0 <= self.tile_overlap < 1, "tile_overlap must be between 0 (inclusive) and 1 (exclusive)"
 
         # Auto-enable ImageNet normalization for SegFormer variants
         if self.model_type in ("segformer", "segformer_gc"):

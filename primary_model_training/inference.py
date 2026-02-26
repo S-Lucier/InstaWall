@@ -115,6 +115,7 @@ def predict_mask(
     batch_size: int = 4,
     device: str = 'cuda',
     model_config: Optional[Dict] = None,
+    use_global_context: bool = True,
 ) -> np.ndarray:
     """
     Run tile-based prediction on an image.
@@ -125,10 +126,14 @@ def predict_mask(
         grid_size: Grid cell size in pixels
         tile_grid_cells: Grid cells per tile
         tile_size: Model input size
-        overlap: Tile overlap ratio
+        overlap: Tile overlap ratio. When the checkpoint used context-border
+            tiling (tile_context_cells > 0) this is automatically set to 0.0
+            unless explicitly overridden.
         batch_size: Tiles per batch
         device: Torch device
         model_config: Config dict from checkpoint (for model_type detection)
+        use_global_context: Pass 256x256 whole-map context to segformer_gc
+            (default True). Set False to disable even for gc checkpoints.
 
     Returns:
         Predicted class mask (H, W)
@@ -139,18 +144,30 @@ def predict_mask(
     model_type = model_config.get('model_type', 'unet')
     use_imagenet_norm = model_type in ('segformer', 'segformer_gc')
 
+    # Read context border cells from checkpoint config (0 for old checkpoints)
+    tile_context_cells = model_config.get('tile_context_cells', 0)
+
+    # When tiles include a context border the model was trained without overlap,
+    # so there is no need for overlap-based averaging at inference either.
+    effective_overlap = overlap
+    if tile_context_cells > 0 and overlap == 0.5:
+        # 0.5 is the argparse default — treat it as "not explicitly set" and
+        # auto-select 0.0 so non-overlapping context tiles cover the whole image.
+        effective_overlap = 0.0
+
     pipeline = TilePipeline(
         model=model,
         tile_grid_cells=tile_grid_cells,
         tile_size=tile_size,
-        overlap=overlap,
+        overlap=effective_overlap,
         device=device,
         imagenet_norm=use_imagenet_norm,
+        context_cells=tile_context_cells,
     )
 
     # Prepare global context image for segformer_gc
     global_image = None
-    if model_type == 'segformer_gc':
+    if model_type == 'segformer_gc' and use_global_context:
         global_image_size = model_config.get('global_image_size', 256)
         global_image = _prepare_global_image(image, global_image_size, device)
 
@@ -465,6 +482,7 @@ def process_image(
     device: str = 'cuda',
     tta_passes: int = 0,
     min_component_size: float = 0.0,
+    use_global_context: bool = True,
 ):
     """
     Process a single image and save outputs.
@@ -501,6 +519,7 @@ def process_image(
         overlap=overlap,
         device=device,
         model_config=model_config,
+        use_global_context=use_global_context,
     )
 
     if tta_passes > 1:
@@ -599,6 +618,10 @@ def main():
     parser.add_argument('--tta', type=int, default=0, metavar='N',
                         help='Test-time augmentation passes (0=off, 8=full)')
 
+    # Global context
+    parser.add_argument('--no-global-context', action='store_true',
+                        help='Disable 256x256 whole-map context for segformer_gc checkpoints')
+
     # Post-processing
     parser.add_argument('--min-component-size', type=float, default=0.0, metavar='FRAC',
                         help='Remove predicted regions smaller than FRAC * grid_size² pixels. '
@@ -628,6 +651,7 @@ def main():
         device=device,
         tta_passes=args.tta,
         min_component_size=args.min_component_size,
+        use_global_context=not args.no_global_context,
     )
 
 

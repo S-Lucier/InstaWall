@@ -215,6 +215,8 @@ class Trainer:
             use_imagenet_norm=config.use_imagenet_norm,
             global_image_size=config.global_image_size if config.use_global_context else 0,
             mask_dilation=config.mask_dilation,
+            grayscale_aug=config.grayscale_aug,
+            tile_context_cells=config.tile_context_cells,
         )
 
         self.train_loader = DataLoader(
@@ -233,14 +235,25 @@ class Trainer:
         else:
             class_weights = compute_class_weights(self.train_dataset, config.num_classes)
 
-        if config.use_focal_loss:
-            self.criterion = FocalLoss(
-                weight=class_weights.to(self.device),
-                gamma=config.focal_gamma,
-            )
+        # Always create CE criterion; create Focal if needed by either flag.
+        self.ce_criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+        needs_focal = config.use_focal_loss or config.focal_loss_schedule
+        self.focal_criterion = (
+            FocalLoss(weight=class_weights.to(self.device), gamma=config.focal_gamma)
+            if needs_focal else None
+        )
+
+        if config.use_focal_loss and not config.focal_loss_schedule:
+            self.criterion = self.focal_criterion
             print(f"Using Focal Loss (gamma={config.focal_gamma})")
+        elif config.focal_loss_schedule:
+            self.criterion = self.ce_criterion
+            end_str = str(config.focal_schedule_end) if config.focal_schedule_end > 0 else "never"
+            print(f"Focal schedule: CE until epoch {config.focal_schedule_start}, "
+                  f"then Focal (gamma={config.focal_gamma}), "
+                  f"then CE at epoch {end_str}")
         else:
-            self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+            self.criterion = self.ce_criterion
 
         # Optimizer
         self.optimizer = optim.AdamW(
@@ -326,6 +339,23 @@ class Trainer:
         if self.config.use_global_context and 'global_image' in batch:
             kwargs['global_image'] = batch['global_image'].to(self.device)
         return kwargs
+
+    def _update_criterion(self, epoch: int):
+        """Switch loss function according to the focal loss phase schedule."""
+        if not self.config.focal_loss_schedule:
+            return
+
+        start = self.config.focal_schedule_start
+        end = self.config.focal_schedule_end
+        in_focal_phase = epoch >= start and (end == 0 or epoch < end)
+
+        if in_focal_phase and self.criterion is not self.focal_criterion:
+            self.criterion = self.focal_criterion
+            print(f"  [Focal schedule] Epoch {epoch}: switching to Focal Loss "
+                  f"(gamma={self.config.focal_gamma})")
+        elif not in_focal_phase and self.criterion is not self.ce_criterion:
+            self.criterion = self.ce_criterion
+            print(f"  [Focal schedule] Epoch {epoch}: switching to Cross-Entropy Loss")
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train for one epoch."""
@@ -558,6 +588,9 @@ class Trainer:
             # Resample data sources for this epoch (subsamples Watabou, randomizes variants)
             self.train_dataset.resample_for_epoch()
 
+            # Switch loss function if focal schedule is active
+            self._update_criterion(epoch + 1)
+
             # Train
             print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
             train_metrics = self.train_epoch(epoch + 1)
@@ -680,10 +713,32 @@ def main():
                         help='Use focal loss instead of cross-entropy')
     parser.add_argument('--focal-gamma', type=float, default=2.0,
                         help='Focal loss gamma (default: 2.0)')
+    parser.add_argument('--focal-schedule', action='store_true',
+                        help='CE->Focal->CE curriculum (default: off). '
+                             'Use with --focal-start-epoch and --focal-end-epoch')
+    parser.add_argument('--focal-start-epoch', type=int, default=15,
+                        help='Epoch to switch from CE to Focal loss (default: 15)')
+    parser.add_argument('--focal-end-epoch', type=int, default=30,
+                        help='Epoch to switch back from Focal to CE (0 = never, default: 30)')
 
     # Mask dilation
     parser.add_argument('--mask-dilation', type=int, default=0,
                         help='Dilate training masks by N pixels to strengthen wall signal (default: 0)')
+
+    # Augmentation
+    parser.add_argument('--no-grayscale-aug', action='store_true',
+                        help='Disable random greyscale augmentation (enabled by default, p=0.3)')
+
+    # Tiling
+    parser.add_argument('--tile-context-cells', type=int, default=1,
+                        help='Grid cells of context border included around each tile (default: 1). '
+                             '0 = disabled (old overlap-based stitching)')
+    parser.add_argument('--no-tile-context', action='store_true',
+                        help='Disable context border tiling (equivalent to --tile-context-cells 0)')
+
+    # Global context
+    parser.add_argument('--no-global-context', action='store_true',
+                        help='Disable 256x256 whole-map global context for segformer_gc')
 
     # Checkpointing
     parser.add_argument('--save-interval', type=int, default=50,
@@ -704,6 +759,8 @@ def main():
                         help='Disable augmentations')
 
     args = parser.parse_args()
+
+    tile_context = 0 if args.no_tile_context else args.tile_context_cells
 
     # Create config
     config = Config(
@@ -731,8 +788,17 @@ def main():
         ema_decay=args.ema_decay,
         use_focal_loss=args.focal_loss,
         focal_gamma=args.focal_gamma,
+        focal_loss_schedule=args.focal_schedule,
+        focal_schedule_start=args.focal_start_epoch,
+        focal_schedule_end=args.focal_end_epoch,
         mask_dilation=args.mask_dilation,
+        grayscale_aug=not args.no_grayscale_aug,
+        tile_context_cells=tile_context,
     )
+
+    # --no-global-context overrides the auto-enable in Config.__post_init__
+    if args.no_global_context:
+        config.use_global_context = False
 
     # Train
     trainer = Trainer(config, resume_path=args.resume)

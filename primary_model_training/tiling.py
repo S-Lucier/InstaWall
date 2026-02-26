@@ -37,17 +37,23 @@ class TileExtractor:
         self,
         tile_grid_cells: int = 8,
         tile_size: int = 512,
-        overlap: float = 0.5
+        overlap: float = 0.5,
+        context_cells: int = 0,
     ):
         """
         Args:
             tile_grid_cells: Number of grid cells per tile (tiles are square)
             tile_size: Output tile size in pixels (model input resolution)
             overlap: Overlap ratio between adjacent tiles (0.5 = 50% overlap)
+            context_cells: Extra grid cells of surrounding map included on each
+                side of the tile as context. The model input covers
+                (tile_grid_cells + 2*context_cells) grid cells but tile
+                positions are still spaced by tile_grid_cells cells.
         """
         self.tile_grid_cells = tile_grid_cells
         self.tile_size = tile_size
         self.overlap = overlap
+        self.context_cells = context_cells
 
     def compute_tile_positions(
         self,
@@ -115,6 +121,11 @@ class TileExtractor:
         """
         Extract and resize a single tile from the image.
 
+        When context_cells > 0 the extracted region is expanded by
+        context_cells * grid_size pixels on each side. The whole region
+        (inner tile + context border) is resized to tile_size, so the model
+        input covers more of the map at slightly reduced scale.
+
         Args:
             image: Source image (H, W, C) or (H, W)
             tile_info: Tile position and size info
@@ -125,22 +136,34 @@ class TileExtractor:
         """
         from PIL import Image as PILImage
 
-        # Expected tile size
-        expected_size = self.tile_grid_cells * grid_size
+        img_h, img_w = image.shape[:2]
+        context_px = self.context_cells * grid_size
+        tile_px = self.tile_grid_cells * grid_size
+        total_px = tile_px + 2 * context_px  # target extraction size
 
-        # Extract tile region
-        x, y = tile_info.x, tile_info.y
-        w, h = tile_info.width, tile_info.height
+        # Extraction region in native pixel space (with context, may go negative)
+        x0 = tile_info.x - context_px
+        y0 = tile_info.y - context_px
+        x1 = x0 + total_px
+        y1 = y0 + total_px
 
-        tile = image[y:y+h, x:x+w]
+        # Clamp to image bounds
+        x0c, y0c = max(0, x0), max(0, y0)
+        x1c, y1c = min(img_w, x1), min(img_h, y1)
 
-        # Pad if tile is smaller than expected (edge tiles)
-        if w < expected_size or h < expected_size:
+        tile = image[y0c:y1c, x0c:x1c]
+
+        # Pad into a total_px × total_px canvas (handles edges and context overflow)
+        pad_left = x0c - x0   # pixels clipped/padded on the left
+        pad_top  = y0c - y0   # pixels clipped/padded on the top
+        h_tile, w_tile = tile.shape[:2]
+
+        if h_tile < total_px or w_tile < total_px or pad_left > 0 or pad_top > 0:
             if len(tile.shape) == 3:
-                padded = np.zeros((expected_size, expected_size, tile.shape[2]), dtype=tile.dtype)
+                padded = np.zeros((total_px, total_px, tile.shape[2]), dtype=tile.dtype)
             else:
-                padded = np.zeros((expected_size, expected_size), dtype=tile.dtype)
-            padded[:h, :w] = tile
+                padded = np.zeros((total_px, total_px), dtype=tile.dtype)
+            padded[pad_top:pad_top + h_tile, pad_left:pad_left + w_tile] = tile
             tile = padded
 
         # Resize to model input size
@@ -188,20 +211,22 @@ class TileStitcher:
         self,
         tile_grid_cells: int = 8,
         tile_size: int = 512,
-        overlap: float = 0.5
+        overlap: float = 0.5,
+        context_cells: int = 0,
     ):
         """
         Args:
             tile_grid_cells: Number of grid cells per tile
             tile_size: Model output tile size in pixels
-            overlap: Overlap ratio used during extraction
+            overlap: Overlap ratio used during extraction (ignored when context_cells > 0)
+            context_cells: Context border cells (must match TileExtractor setting)
         """
         self.tile_grid_cells = tile_grid_cells
         self.tile_size = tile_size
         self.overlap = overlap
+        self.context_cells = context_cells
 
-        # Center crop ratio (portion of tile to keep)
-        # With 50% overlap, we keep the center 50%
+        # Center crop ratio (portion of tile to keep) — used when context_cells == 0
         self.keep_ratio = 1 - overlap
 
     def stitch(
@@ -234,66 +259,96 @@ class TileStitcher:
         else:
             output = np.zeros((output_height, output_width), dtype=sample.dtype)
 
-        # Track which pixels have been filled (for averaging overlapping regions)
-        # For simplicity, we use a last-write-wins strategy for the center crop
-        # This works because center crops shouldn't overlap with proper stride
+        if self.context_cells > 0:
+            # ----------------------------------------------------------------
+            # Context-border path: the model saw (tile + context border) pixels.
+            # Crop out the context border from each prediction and place the
+            # inner tile region at its native position. No edge-tile special
+            # casing needed — the context is always zero-padded at image edges.
+            # ----------------------------------------------------------------
+            tile_px = self.tile_grid_cells * grid_size
+            context_px_native = self.context_cells * grid_size
+            total_native = tile_px + 2 * context_px_native
 
-        # Calculate crop boundaries in tile pixel space
-        crop_margin = int(self.tile_size * self.overlap / 2)
-        crop_size = self.tile_size - 2 * crop_margin
+            # Context margin in model pixel space
+            ctx_m = round(self.tile_size * context_px_native / total_native)
 
-        # Scale factor from tile space to original image space
-        tile_pixels = self.tile_grid_cells * grid_size
-        scale = tile_pixels / self.tile_size
+            for pred, info in zip(predictions, tile_infos):
+                # Crop context border
+                cropped = pred[ctx_m:self.tile_size - ctx_m,
+                               ctx_m:self.tile_size - ctx_m]
 
-        # Determine which tiles are at edges (need wider or full crop)
-        max_x = max(info.x for info in tile_infos) if tile_infos else 0
-        max_y = max(info.y for info in tile_infos) if tile_infos else 0
+                # Resize inner region to native tile size, clamped at image edge
+                out_x, out_y = info.x, info.y
+                out_w = min(tile_px, output_width - out_x)
+                out_h = min(tile_px, output_height - out_y)
 
-        for pred, info in zip(predictions, tile_infos):
-            # For edge tiles, extend the crop to cover the image boundary
-            top_margin = crop_margin if info.y > 0 else 0
-            left_margin = crop_margin if info.x > 0 else 0
-            bottom_margin = crop_margin if info.y < max_y else 0
-            right_margin = crop_margin if info.x < max_x else 0
+                pil_cropped = PILImage.fromarray(cropped)
+                pil_cropped = pil_cropped.resize((out_w, out_h),
+                                                  PILImage.Resampling.NEAREST)
+                output[out_y:out_y + out_h,
+                       out_x:out_x + out_w] = np.array(pil_cropped)
 
-            # Crop prediction with edge-aware margins
-            y1 = top_margin
-            y2 = self.tile_size - bottom_margin
-            x1 = left_margin
-            x2 = self.tile_size - right_margin
-            cropped = pred[y1:y2, x1:x2]
+        else:
+            # ----------------------------------------------------------------
+            # Original overlap-based center-crop path.
+            # ----------------------------------------------------------------
 
-            # Calculate position in output
-            out_x = info.x + int(left_margin * scale)
-            out_y = info.y + int(top_margin * scale)
+            # Calculate crop boundaries in tile pixel space
+            crop_margin = int(self.tile_size * self.overlap / 2)
 
-            # Resize cropped prediction to original scale
-            out_w = int((x2 - x1) * scale)
-            out_h = int((y2 - y1) * scale)
+            # Scale factor from tile space to original image space
+            tile_pixels = self.tile_grid_cells * grid_size
+            scale = tile_pixels / self.tile_size
 
-            pil_cropped = PILImage.fromarray(cropped)
-            resample = PILImage.Resampling.NEAREST  # Use nearest for class labels
-            pil_cropped = pil_cropped.resize((out_w, out_h), resample)
-            resized = np.array(pil_cropped)
+            # Determine which tiles are at edges (need wider or full crop)
+            max_x = max(info.x for info in tile_infos) if tile_infos else 0
+            max_y = max(info.y for info in tile_infos) if tile_infos else 0
 
-            # Clamp to output bounds
-            src_x1, src_y1 = 0, 0
-            dst_x1, dst_y1 = out_x, out_y
-            dst_x2, dst_y2 = min(out_x + out_w, output_width), min(out_y + out_h, output_height)
+            for pred, info in zip(predictions, tile_infos):
+                # For edge tiles, extend the crop to cover the image boundary
+                top_margin = crop_margin if info.y > 0 else 0
+                left_margin = crop_margin if info.x > 0 else 0
+                bottom_margin = crop_margin if info.y < max_y else 0
+                right_margin = crop_margin if info.x < max_x else 0
 
-            if dst_x1 < 0:
-                src_x1 = -dst_x1
-                dst_x1 = 0
-            if dst_y1 < 0:
-                src_y1 = -dst_y1
-                dst_y1 = 0
+                # Crop prediction with edge-aware margins
+                y1 = top_margin
+                y2 = self.tile_size - bottom_margin
+                x1 = left_margin
+                x2 = self.tile_size - right_margin
+                cropped = pred[y1:y2, x1:x2]
 
-            copy_w = dst_x2 - dst_x1
-            copy_h = dst_y2 - dst_y1
+                # Calculate position in output
+                out_x = info.x + int(left_margin * scale)
+                out_y = info.y + int(top_margin * scale)
 
-            if copy_w > 0 and copy_h > 0:
-                output[dst_y1:dst_y2, dst_x1:dst_x2] = resized[src_y1:src_y1+copy_h, src_x1:src_x1+copy_w]
+                # Resize cropped prediction to original scale
+                out_w = int((x2 - x1) * scale)
+                out_h = int((y2 - y1) * scale)
+
+                pil_cropped = PILImage.fromarray(cropped)
+                resample = PILImage.Resampling.NEAREST  # Use nearest for class labels
+                pil_cropped = pil_cropped.resize((out_w, out_h), resample)
+                resized = np.array(pil_cropped)
+
+                # Clamp to output bounds
+                src_x1, src_y1 = 0, 0
+                dst_x1, dst_y1 = out_x, out_y
+                dst_x2, dst_y2 = min(out_x + out_w, output_width), min(out_y + out_h, output_height)
+
+                if dst_x1 < 0:
+                    src_x1 = -dst_x1
+                    dst_x1 = 0
+                if dst_y1 < 0:
+                    src_y1 = -dst_y1
+                    dst_y1 = 0
+
+                copy_w = dst_x2 - dst_x1
+                copy_h = dst_y2 - dst_y1
+
+                if copy_w > 0 and copy_h > 0:
+                    output[dst_y1:dst_y2, dst_x1:dst_x2] = resized[src_y1:src_y1+copy_h, src_x1:src_x1+copy_w]
 
         return output
 
@@ -313,21 +368,25 @@ class TilePipeline:
         overlap: float = 0.5,
         device: str = 'cuda',
         imagenet_norm: bool = False,
+        context_cells: int = 0,
     ):
         """
         Args:
             model: Trained segmentation model
             tile_grid_cells: Number of grid cells per tile
             tile_size: Model input/output size
-            overlap: Overlap ratio
+            overlap: Overlap ratio (ignored when context_cells > 0)
             device: Torch device
             imagenet_norm: Use ImageNet normalization instead of simple 0-1
+            context_cells: Context border grid cells (must match training setting)
         """
         self.model = model
         self.device = device
         self.imagenet_norm = imagenet_norm
-        self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap)
-        self.stitcher = TileStitcher(tile_grid_cells, tile_size, overlap)
+        self.extractor = TileExtractor(tile_grid_cells, tile_size, overlap,
+                                       context_cells=context_cells)
+        self.stitcher = TileStitcher(tile_grid_cells, tile_size, overlap,
+                                     context_cells=context_cells)
 
     def predict(
         self,
