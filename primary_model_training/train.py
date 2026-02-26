@@ -206,7 +206,7 @@ class Trainer:
             metadata_file=config.metadata_file,
             tile_grid_cells=config.tile_grid_cells,
             tile_size=config.tile_size,
-            tiles_per_image=4,
+            tiles_per_image=config.tiles_per_image,
             mask_scale=config.mask_scale,
             augment=config.augment,
             merge_terrain=config.merge_terrain,
@@ -217,6 +217,9 @@ class Trainer:
             mask_dilation=config.mask_dilation,
             grayscale_aug=config.grayscale_aug,
             tile_context_cells=config.tile_context_cells,
+            sample_texture_crops=(config.model_type == "segformer_texture"),
+            texture_crop_size=config.texture_crop_size,
+            texture_crops_per_class=config.texture_crops_per_class,
         )
 
         self.train_loader = DataLoader(
@@ -338,6 +341,11 @@ class Trainer:
         kwargs = {}
         if self.config.use_global_context and 'global_image' in batch:
             kwargs['global_image'] = batch['global_image'].to(self.device)
+        if self.config.model_type == 'segformer_texture':
+            if 'wall_crops' in batch:
+                kwargs['wall_crops'] = batch['wall_crops'].to(self.device)
+            if 'door_crops' in batch:
+                kwargs['door_crops'] = batch['door_crops'].to(self.device)
         return kwargs
 
     def _update_criterion(self, epoch: int):
@@ -679,6 +687,8 @@ def main():
                         help='Learning rate')
     parser.add_argument('--num-workers', type=int, default=4,
                         help='Data loading workers')
+    parser.add_argument('--tiles-per-image', type=int, default=4,
+                        help='Random tiles extracted per image per epoch (default: 4)')
 
     # Tiling
     parser.add_argument('--tile-grid-cells', type=int, default=8,
@@ -688,7 +698,7 @@ def main():
 
     # Model
     parser.add_argument('--model', default='unet',
-                        choices=['unet', 'segformer', 'segformer_gc'],
+                        choices=['unet', 'segformer', 'segformer_gc', 'segformer_texture'],
                         help='Model architecture (default: unet)')
     parser.add_argument('--segformer-variant', default='b0',
                         choices=['b0', 'b1', 'b2', 'b3', 'b4', 'b5'],
@@ -736,7 +746,15 @@ def main():
     parser.add_argument('--no-tile-context', action='store_true',
                         help='Disable context border tiling (equivalent to --tile-context-cells 0)')
 
+    # Texture prototype (segformer_texture only)
+    parser.add_argument('--texture-crop-size', type=int, default=64,
+                        help='Texture crop side length in 512px tile space (default: 64)')
+    parser.add_argument('--texture-crops-per-class', type=int, default=2,
+                        help='Number of texture crops to sample per class per tile (default: 2)')
+
     # Global context
+    parser.add_argument('--global-context', action='store_true',
+                        help='Enable global context for segformer_texture (auto-enabled for segformer_gc)')
     parser.add_argument('--no-global-context', action='store_true',
                         help='Disable 256x256 whole-map global context for segformer_gc')
 
@@ -794,9 +812,14 @@ def main():
         mask_dilation=args.mask_dilation,
         grayscale_aug=not args.no_grayscale_aug,
         tile_context_cells=tile_context,
+        texture_crop_size=args.texture_crop_size,
+        texture_crops_per_class=args.texture_crops_per_class,
+        tiles_per_image=args.tiles_per_image,
     )
 
-    # --no-global-context overrides the auto-enable in Config.__post_init__
+    # --global-context / --no-global-context override Config.__post_init__ defaults
+    if args.global_context:
+        config.use_global_context = True
     if args.no_global_context:
         config.use_global_context = False
 

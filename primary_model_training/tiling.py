@@ -394,6 +394,8 @@ class TilePipeline:
         grid_size: int,
         batch_size: int = 4,
         global_image: Optional[torch.Tensor] = None,
+        wall_crops: Optional[torch.Tensor] = None,
+        door_crops: Optional[torch.Tensor] = None,
     ) -> np.ndarray:
         """
         Run tile-based prediction on a full image.
@@ -403,6 +405,8 @@ class TilePipeline:
             grid_size: Grid cell size in pixels
             batch_size: Number of tiles to process at once
             global_image: Optional pre-processed global context tensor (1, 3, H, W)
+            wall_crops: Optional wall texture crops tensor (1, N, 3, K, K)
+            door_crops: Optional door texture crops tensor (1, N, 3, K, K)
 
         Returns:
             Predicted class mask (H, W)
@@ -440,10 +444,13 @@ class TilePipeline:
                 batch = torch.stack(tile_tensors[i:i+batch_size]).to(self.device)
 
                 kwargs = {}
+                bs = batch.shape[0]
                 if global_image is not None:
-                    # Expand global_image to match batch size
-                    bs = batch.shape[0]
                     kwargs['global_image'] = global_image.expand(bs, -1, -1, -1)
+                if wall_crops is not None:
+                    kwargs['wall_crops'] = wall_crops.expand(bs, -1, -1, -1, -1)
+                if door_crops is not None:
+                    kwargs['door_crops'] = door_crops.expand(bs, -1, -1, -1, -1)
 
                 logits = self.model(batch, **kwargs)
                 preds = logits.argmax(dim=1).cpu().numpy()

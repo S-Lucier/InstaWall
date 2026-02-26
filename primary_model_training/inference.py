@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .model import WallSegmentationUNet, SegFormerWrapper, GlobalContextSegFormer
+from .model import WallSegmentationUNet, SegFormerWrapper, GlobalContextSegFormer, TextureConditionedSegFormer
 from .tiling import TilePipeline, TileExtractor, TileStitcher
 from .config import Config
 
@@ -59,7 +59,16 @@ def load_model(checkpoint_path: str, device: str = 'cuda'):
     config = checkpoint.get('config', {})
     model_type = config.get('model_type', 'unet')
 
-    if model_type == 'segformer_gc':
+    if model_type == 'segformer_texture':
+        model = TextureConditionedSegFormer(
+            num_classes=config.get('num_classes', 3),
+            variant=config.get('segformer_variant', 'b0'),
+            context_dim=config.get('global_context_dim', 128),
+            texture_crop_size=config.get('texture_crop_size', 64),
+            texture_crops_per_class=config.get('texture_crops_per_class', 2),
+            use_global_context=config.get('use_global_context', False),
+        )
+    elif model_type == 'segformer_gc':
         model = GlobalContextSegFormer(
             num_classes=config.get('num_classes', 3),
             variant=config.get('segformer_variant', 'b0'),
@@ -105,6 +114,49 @@ def _prepare_global_image(
     return t.unsqueeze(0).to(device)  # (1, 3, H, W)
 
 
+def _load_texture_crops(
+    crop_paths: List[str],
+    crop_size: int,
+    n_crops: int,
+    device: str,
+) -> torch.Tensor:
+    """
+    Load user-provided crop images and return as a texture crop tensor.
+
+    Args:
+        crop_paths: List of paths to crop image files
+        crop_size: Target side length K (must match training texture_crop_size)
+        n_crops: Expected number of crops (texture_crops_per_class from checkpoint)
+        device: Torch device
+
+    Returns:
+        (1, N, 3, K, K) float tensor, ImageNet-normalised, ready to broadcast
+        over batch. Returns all-zero tensor when crop_paths is empty.
+    """
+    K = crop_size
+    MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    if not crop_paths:
+        return torch.zeros(1, n_crops, 3, K, K, device=device)
+
+    tensors = []
+    for path in crop_paths[:n_crops]:
+        img = np.array(
+            Image.open(path).convert('RGB').resize((K, K), Image.Resampling.BILINEAR)
+        )
+        t = torch.from_numpy(img).float() / 255.0  # (K, K, 3)
+        t = t.permute(2, 0, 1)                     # (3, K, K)
+        t = (t - MEAN) / STD
+        tensors.append(t)
+
+    # If fewer crops than n_crops, tile the last one to fill the slot
+    while len(tensors) < n_crops:
+        tensors.append(tensors[-1].clone())
+
+    return torch.stack(tensors).unsqueeze(0).to(device)  # (1, N, 3, K, K)
+
+
 def predict_mask(
     model,
     image: np.ndarray,
@@ -116,6 +168,8 @@ def predict_mask(
     device: str = 'cuda',
     model_config: Optional[Dict] = None,
     use_global_context: bool = True,
+    wall_crop_paths: Optional[List[str]] = None,
+    door_crop_paths: Optional[List[str]] = None,
 ) -> np.ndarray:
     """
     Run tile-based prediction on an image.
@@ -134,6 +188,8 @@ def predict_mask(
         model_config: Config dict from checkpoint (for model_type detection)
         use_global_context: Pass 256x256 whole-map context to segformer_gc
             (default True). Set False to disable even for gc checkpoints.
+        wall_crop_paths: Paths to wall texture crop images (segformer_texture only)
+        door_crop_paths: Paths to door texture crop images (segformer_texture only)
 
     Returns:
         Predicted class mask (H, W)
@@ -142,7 +198,7 @@ def predict_mask(
         model_config = {}
 
     model_type = model_config.get('model_type', 'unet')
-    use_imagenet_norm = model_type in ('segformer', 'segformer_gc')
+    use_imagenet_norm = model_type in ('segformer', 'segformer_gc', 'segformer_texture')
 
     # Read context border cells from checkpoint config (0 for old checkpoints)
     tile_context_cells = model_config.get('tile_context_cells', 0)
@@ -171,7 +227,21 @@ def predict_mask(
         global_image_size = model_config.get('global_image_size', 256)
         global_image = _prepare_global_image(image, global_image_size, device)
 
-    return pipeline.predict(image, grid_size, batch_size, global_image=global_image)
+    # Prepare texture crops for segformer_texture
+    wall_crops = None
+    door_crops = None
+    if model_type == 'segformer_texture':
+        crop_size = model_config.get('texture_crop_size', 64)
+        n_crops = model_config.get('texture_crops_per_class', 2)
+        wall_crops = _load_texture_crops(wall_crop_paths or [], crop_size, n_crops, device)
+        door_crops = _load_texture_crops(door_crop_paths or [], crop_size, n_crops, device)
+
+    return pipeline.predict(
+        image, grid_size, batch_size,
+        global_image=global_image,
+        wall_crops=wall_crops,
+        door_crops=door_crops,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +553,8 @@ def process_image(
     tta_passes: int = 0,
     min_component_size: float = 0.0,
     use_global_context: bool = True,
+    wall_crop_paths: Optional[List[str]] = None,
+    door_crop_paths: Optional[List[str]] = None,
 ):
     """
     Process a single image and save outputs.
@@ -520,6 +592,8 @@ def process_image(
         device=device,
         model_config=model_config,
         use_global_context=use_global_context,
+        wall_crop_paths=wall_crop_paths or [],
+        door_crop_paths=door_crop_paths or [],
     )
 
     if tta_passes > 1:
@@ -618,6 +692,12 @@ def main():
     parser.add_argument('--tta', type=int, default=0, metavar='N',
                         help='Test-time augmentation passes (0=off, 8=full)')
 
+    # Texture prototype crops (segformer_texture checkpoints)
+    parser.add_argument('--wall-crop', nargs='+', default=[], metavar='PATH',
+                        help='Path(s) to wall texture crop image(s) for segformer_texture inference')
+    parser.add_argument('--door-crop', nargs='+', default=[], metavar='PATH',
+                        help='Path(s) to door texture crop image(s) for segformer_texture inference')
+
     # Global context
     parser.add_argument('--no-global-context', action='store_true',
                         help='Disable 256x256 whole-map context for segformer_gc checkpoints')
@@ -652,6 +732,8 @@ def main():
         tta_passes=args.tta,
         min_component_size=args.min_component_size,
         use_global_context=not args.no_global_context,
+        wall_crop_paths=args.wall_crop,
+        door_crop_paths=args.door_crop,
     )
 
 

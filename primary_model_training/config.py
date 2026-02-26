@@ -37,7 +37,8 @@ class Config:
     # Model Architecture
     # ==========================================================================
 
-    # Model type: "unet", "segformer", or "segformer_gc" (with global context)
+    # Model type: "unet", "segformer", "segformer_gc" (with global context),
+    # or "segformer_texture" (few-shot texture conditioning)
     model_type: str = "unet"
 
     # SegFormer variant: "b0" through "b5" (only used when model_type="segformer"/"segformer_gc")
@@ -50,6 +51,10 @@ class Config:
     use_global_context: bool = False
     global_image_size: int = 256
     global_context_dim: int = 128
+
+    # Texture prototype settings (only used when model_type="segformer_texture")
+    texture_crop_size: int = 64         # crop side length in 512px tile space
+    texture_crops_per_class: int = 2    # crops to sample per class per tile
 
     # Number of input channels (RGB)
     in_channels: int = 3
@@ -91,6 +96,9 @@ class Config:
 
     # Batch size
     batch_size: int = 8
+
+    # Random tiles extracted per image per epoch
+    tiles_per_image: int = 4
 
     # Number of epochs
     epochs: int = 1000
@@ -195,12 +203,13 @@ class Config:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
-        assert self.model_type in ("unet", "segformer", "segformer_gc"), \
-            f"model_type must be 'unet', 'segformer', or 'segformer_gc', got '{self.model_type}'"
+        assert self.model_type in ("unet", "segformer", "segformer_gc", "segformer_texture"), \
+            f"model_type must be 'unet', 'segformer', 'segformer_gc', or 'segformer_texture', " \
+            f"got '{self.model_type}'"
         assert 0 <= self.tile_overlap < 1, "tile_overlap must be between 0 (inclusive) and 1 (exclusive)"
 
         # Auto-enable ImageNet normalization for SegFormer variants
-        if self.model_type in ("segformer", "segformer_gc"):
+        if self.model_type in ("segformer", "segformer_gc", "segformer_texture"):
             self.use_imagenet_norm = True
 
         # Auto-enable global context for segformer_gc

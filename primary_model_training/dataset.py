@@ -63,6 +63,9 @@ class WallSegmentationDataset(Dataset):
         mask_dilation: int = 0,
         grayscale_aug: bool = True,
         tile_context_cells: int = 1,
+        sample_texture_crops: bool = False,
+        texture_crop_size: int = 64,
+        texture_crops_per_class: int = 2,
     ):
         """
         Args:
@@ -82,6 +85,9 @@ class WallSegmentationDataset(Dataset):
             global_image_size: If >0, also return the full image downscaled to this size (for global context)
             grayscale_aug: Randomly convert tiles to greyscale (p=0.3) during training
             tile_context_cells: Grid cells of context border included around each tile (0 = disabled)
+            sample_texture_crops: If True, sample wall/door texture crops and return in batch
+            texture_crop_size: Side length (px) of each texture crop in 512px tile space
+            texture_crops_per_class: Number of crops to sample per class per tile
         """
         self.image_dir = Path(image_dir)
         self.mask_dir = Path(mask_dir)
@@ -99,6 +105,9 @@ class WallSegmentationDataset(Dataset):
         self.mask_dilation = mask_dilation
         self.grayscale_aug = grayscale_aug
         self.tile_context_cells = tile_context_cells
+        self.sample_texture_crops = sample_texture_crops
+        self.texture_crop_size = texture_crop_size
+        self.texture_crops_per_class = texture_crops_per_class
 
         # Pre-build dilation structuring element
         if mask_dilation > 0:
@@ -159,6 +168,89 @@ class WallSegmentationDataset(Dataset):
             result[expanded & background] = cls
             background = result == 0  # update remaining background
         return result
+
+    def _sample_texture_crops(
+        self,
+        image_tile: np.ndarray,
+        mask_tile: np.ndarray,
+        class_id: int,
+        n_crops: int,
+        crop_size: int,
+    ) -> torch.Tensor:
+        """
+        Sample N texture crops from image_tile at positions of class_id in mask_tile.
+
+        Crops are loose (K×K) centered on a mask pixel, capturing surrounding
+        visual context. This matches how users clip crops at inference time.
+
+        Args:
+            image_tile: (H, W, 3) uint8 numpy array
+            mask_tile: (H, W) int numpy array with class indices
+            class_id: target class to sample from
+            n_crops: number of crops to return
+            crop_size: crop side length K in pixels
+
+        Returns:
+            (N, 3, K, K) float tensor, ImageNet-normalized if use_imagenet_norm.
+            All-zero tensor when class_id has no pixels in mask_tile.
+        """
+        H, W = image_tile.shape[:2]
+        K = crop_size
+        half = K // 2
+
+        ys, xs = np.where(mask_tile == class_id)
+
+        if len(ys) == 0:
+            return torch.zeros(n_crops, 3, K, K)
+
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+        tensors = []
+        for _ in range(n_crops):
+            idx = random.randint(0, len(ys) - 1)
+            cy, cx = int(ys[idx]), int(xs[idx])
+
+            # Crop bounds (may extend outside image boundaries)
+            y1 = cy - half
+            x1 = cx - half
+            y2 = y1 + K
+            x2 = x1 + K
+
+            # Clamp to image bounds
+            y1c, y2c = max(0, y1), min(H, y2)
+            x1c, x2c = max(0, x1), min(W, x2)
+            crop = image_tile[y1c:y2c, x1c:x2c].copy()
+
+            # Reflect-pad any edges that went outside the image
+            pad_top = y1c - y1
+            pad_bottom = y2 - y2c
+            pad_left = x1c - x1
+            pad_right = x2 - x2c
+            if pad_top > 0 or pad_bottom > 0 or pad_left > 0 or pad_right > 0:
+                crop = np.pad(
+                    crop,
+                    ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
+                    mode='reflect',
+                )
+
+            # Guard against rounding edge cases
+            if crop.shape[0] != K or crop.shape[1] != K:
+                crop = np.array(
+                    Image.fromarray(crop.astype(np.uint8)).resize(
+                        (K, K), Image.BILINEAR
+                    )
+                )
+
+            # (K, K, 3) uint8 → (3, K, K) float32 in [0, 1]
+            t = torch.from_numpy(crop.astype(np.float32) / 255.0).permute(2, 0, 1)
+
+            if self.use_imagenet_norm:
+                t = (t - mean) / std
+
+            tensors.append(t)
+
+        return torch.stack(tensors)  # (N, 3, K, K)
 
     def _normalize_name(self, name: str) -> str:
         """Normalize a name for fuzzy matching."""
@@ -446,6 +538,26 @@ class WallSegmentationDataset(Dataset):
         image_tile = self.extractor.extract_tile(image, tile_info, grid_size)
         mask_tile = self.extractor.extract_tile(mask, tile_info, grid_size)
 
+        # Sample texture crops BEFORE dilation — uses clean, undilated mask positions
+        if self.sample_texture_crops:
+            wall_class = 1
+            door_class = 2 if self.merge_terrain else 3
+
+            wall_crops = self._sample_texture_crops(
+                image_tile, mask_tile, wall_class,
+                self.texture_crops_per_class, self.texture_crop_size,
+            )
+            door_crops = self._sample_texture_crops(
+                image_tile, mask_tile, door_class,
+                self.texture_crops_per_class, self.texture_crop_size,
+            )
+
+            # Random absence augmentation: teaches the model to handle missing crops
+            if random.random() < 0.2:
+                wall_crops = torch.zeros_like(wall_crops)
+            if random.random() < 0.2:
+                door_crops = torch.zeros_like(door_crops)
+
         # Dilate mask for training (expands thin wall lines for stronger gradient signal)
         if self.mask_dilation > 0:
             mask_tile = self._dilate_mask(mask_tile)
@@ -470,6 +582,11 @@ class WallSegmentationDataset(Dataset):
             'mask': mask_tensor,
             'name': sample['name'],
         }
+
+        # Add texture crops if sampling is enabled
+        if self.sample_texture_crops:
+            result['wall_crops'] = wall_crops
+            result['door_crops'] = door_crops
 
         # Add downscaled global image if requested
         if self.global_image_size > 0:

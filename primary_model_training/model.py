@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List
+from typing import List, Optional
 
 
 class DoubleConv(nn.Module):
@@ -312,6 +312,35 @@ class SegFormerWrapper(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
+class TextureEncoder(nn.Module):
+    """Small CNN that maps a K×K RGB crop to a D-dimensional prototype vector."""
+
+    def __init__(self, out_dim: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(3, 32, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, out_dim, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, 3, K, K) crop tensor
+
+        Returns:
+            (B, out_dim) prototype vector
+        """
+        return self.net(x).flatten(1)
+
+
 class GlobalEncoder(nn.Module):
     """Small CNN that compresses a full-resolution image to a fixed-length context vector."""
 
@@ -450,8 +479,208 @@ class GlobalContextSegFormer(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
+class TextureConditionedSegFormer(nn.Module):
+    """
+    SegFormer conditioned on per-class texture prototype crops.
+
+    At inference, the user provides 1–N small image crops of walls and doors
+    from the current map. These are encoded into prototype vectors and used to
+    compute per-class spatial cosine similarity maps over the decoder feature
+    space. The similarity maps are concatenated to the decoder features before
+    classification, specialising the model to the current map's visual style
+    without retraining.
+    """
+
+    _PRETRAINED_DIR = Path(__file__).parent / "pretrained"
+    VARIANT_MAP = SegFormerWrapper.VARIANT_MAP
+
+    def __init__(
+        self,
+        num_classes: int = 3,
+        variant: str = "b0",
+        context_dim: int = 128,
+        texture_crop_size: int = 64,
+        texture_crops_per_class: int = 2,
+        use_global_context: bool = False,
+    ):
+        super().__init__()
+        from transformers import SegformerForSemanticSegmentation
+
+        self.texture_crop_size = texture_crop_size
+        self.texture_crops_per_class = texture_crops_per_class
+        self.use_global_context = use_global_context
+        self.context_dim = context_dim
+
+        # Load pretrained SegFormer
+        local_path = self._PRETRAINED_DIR / f"segformer-{variant}"
+        if local_path.exists():
+            pretrained_source = str(local_path)
+        else:
+            pretrained_source = self.VARIANT_MAP[variant]
+
+        self.segformer_model = SegformerForSemanticSegmentation.from_pretrained(
+            pretrained_source,
+            num_labels=num_classes,
+            ignore_mismatched_sizes=True,
+        )
+
+        # Texture encoder (shared for wall and door classes)
+        decoder_dim = self.segformer_model.config.decoder_hidden_size  # 256 for all variants
+        self.texture_encoder = TextureEncoder(out_dim=decoder_dim)
+
+        # Optional global context encoder
+        if use_global_context:
+            self.global_encoder = GlobalEncoder(context_dim)
+
+        # Classifier: decoder_dim + 2 similarity channels (+ context_dim if enabled)
+        classifier_in = decoder_dim + 2
+        if use_global_context:
+            classifier_in += context_dim
+        self.classifier = nn.Conv2d(classifier_in, num_classes, kernel_size=1)
+
+        # Remove original SegFormer classifier to avoid duplicate parameters
+        self.segformer_model.decode_head.classifier = nn.Identity()
+
+    def _run_decode_head_no_classifier(self, encoder_hidden_states):
+        """Run the SegFormer decode_head but stop before the classifier."""
+        dh = self.segformer_model.decode_head
+        batch_size = encoder_hidden_states[-1].shape[0]
+
+        all_hidden_states = ()
+        for encoder_hidden_state, mlp in zip(encoder_hidden_states, dh.linear_c):
+            height, width = encoder_hidden_state.shape[2], encoder_hidden_state.shape[3]
+            encoder_hidden_state = mlp(encoder_hidden_state)
+            encoder_hidden_state = encoder_hidden_state.permute(0, 2, 1)
+            encoder_hidden_state = encoder_hidden_state.reshape(batch_size, -1, height, width)
+            encoder_hidden_state = F.interpolate(
+                encoder_hidden_state, size=encoder_hidden_states[0].size()[2:],
+                mode="bilinear", align_corners=False
+            )
+            all_hidden_states += (encoder_hidden_state,)
+
+        hidden_states = dh.linear_fuse(torch.cat(all_hidden_states[::-1], dim=1))
+        hidden_states = dh.batch_norm(hidden_states)
+        hidden_states = dh.activation(hidden_states)
+        hidden_states = dh.dropout(hidden_states)
+        return hidden_states  # (B, 256, H/4, W/4)
+
+    def _compute_sim_map(
+        self,
+        crops: torch.Tensor,
+        F_norm: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute spatial cosine similarity map between texture crops and decoder features.
+
+        Args:
+            crops: (B, N, 3, K, K) texture crops; zero tensor when class is absent
+            F_norm: (B, D, H, W) L2-normalised decoder features
+
+        Returns:
+            (B, 1, H, W) similarity map (all zeros for absent-crop samples)
+        """
+        B, N, C, K_h, K_w = crops.shape
+        H, W = F_norm.shape[2:]
+
+        # Detect per-sample absence: a sample's crops are absent when all values are zero
+        absent = (crops.view(B, -1).abs().sum(dim=-1) == 0)  # (B,)
+
+        # Encode all crops: (B*N, 3, K, K) -> (B*N, D) -> (B, N, D)
+        protos_flat = self.texture_encoder(crops.view(B * N, C, K_h, K_w))
+        protos = protos_flat.view(B, N, -1)  # (B, N, D)
+
+        # L2-normalise prototypes along channel dim
+        protos_norm = F.normalize(protos, dim=2)  # (B, N, D)
+
+        # Per-crop cosine similarity via broadcasting:
+        #   protos_norm: (B, N, D, 1, 1) × F_norm: (B, 1, D, H, W) -> sum -> (B, N, H, W)
+        protos_exp = protos_norm.unsqueeze(-1).unsqueeze(-1)  # (B, N, D, 1, 1)
+        F_exp = F_norm.unsqueeze(1)                           # (B, 1, D, H, W)
+        sims = (protos_exp * F_exp).sum(dim=2)                # (B, N, H, W)
+
+        # Max-pool over N crops: "does this position match ANY provided texture?"
+        sim_max = sims.max(dim=1, keepdim=True)[0]  # (B, 1, H, W)
+
+        # Zero out absent samples without breaking the gradient graph
+        absent_mask = absent.float().detach().view(B, 1, 1, 1)
+        sim_max = sim_max * (1.0 - absent_mask)
+
+        return sim_max
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        wall_crops: Optional[torch.Tensor] = None,
+        door_crops: Optional[torch.Tensor] = None,
+        global_image: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            x: Tile image tensor (B, 3, H, W)
+            wall_crops: Wall texture crops (B, N, 3, K, K); None → zero tensor
+            door_crops: Door texture crops (B, N, 3, K, K); None → zero tensor
+            global_image: Downscaled full map for global context (B, 3, Hg, Wg)
+
+        Returns:
+            Class logits (B, num_classes, H, W) at full tile resolution
+        """
+        B = x.shape[0]
+        K = self.texture_crop_size
+        N = self.texture_crops_per_class
+
+        # Default to zero tensors when no crops are supplied (no-texture mode)
+        if wall_crops is None:
+            wall_crops = torch.zeros(B, N, 3, K, K, device=x.device, dtype=x.dtype)
+        if door_crops is None:
+            door_crops = torch.zeros(B, N, 3, K, K, device=x.device, dtype=x.dtype)
+
+        # Encode tile: SegFormer encoder + decode head (no classifier)
+        encoder_out = self.segformer_model.segformer(x, output_hidden_states=True)
+        decoder_features = self._run_decode_head_no_classifier(
+            encoder_out.hidden_states
+        )  # (B, 256, H/4, W/4)
+
+        # L2-normalise decoder features for cosine similarity computation
+        F_norm = F.normalize(decoder_features, dim=1)  # (B, D, H/4, W/4)
+
+        # Compute per-class similarity maps
+        sim_wall = self._compute_sim_map(wall_crops, F_norm)  # (B, 1, H/4, W/4)
+        sim_door = self._compute_sim_map(door_crops, F_norm)  # (B, 1, H/4, W/4)
+
+        # Concatenate: decoder features + similarity channels
+        fused = torch.cat([decoder_features, sim_wall, sim_door], dim=1)  # (B, 258, H/4, W/4)
+
+        # Optionally append global context
+        if self.use_global_context:
+            if global_image is not None:
+                ctx = self.global_encoder(global_image)  # (B, context_dim)
+            else:
+                ctx = torch.zeros(B, self.context_dim, device=x.device)
+            h, w = decoder_features.shape[2], decoder_features.shape[3]
+            ctx_spatial = ctx[:, :, None, None].expand(-1, -1, h, w)
+            fused = torch.cat([fused, ctx_spatial], dim=1)  # (B, 386, H/4, W/4)
+
+        # Classify
+        logits = self.classifier(fused)  # (B, num_classes, H/4, W/4)
+        logits = F.interpolate(logits, size=x.shape[2:], mode='bilinear', align_corners=False)
+        return logits
+
+    def get_num_parameters(self) -> int:
+        """Returns total number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
 def create_model(config):
     """Create model from config."""
+    if config.model_type == "segformer_texture":
+        return TextureConditionedSegFormer(
+            num_classes=config.num_classes,
+            variant=config.segformer_variant,
+            context_dim=config.global_context_dim,
+            texture_crop_size=config.texture_crop_size,
+            texture_crops_per_class=config.texture_crops_per_class,
+            use_global_context=config.use_global_context,
+        )
     if config.model_type == "segformer_gc":
         return GlobalContextSegFormer(
             num_classes=config.num_classes,
