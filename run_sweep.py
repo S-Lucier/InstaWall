@@ -37,7 +37,7 @@ OUTPUT_BASE = "outputs/sweep"
 
 # ============================================================
 
-# Shared base flags for all runs (4090-optimised, 3-class)
+# Shared base flags for all runs (4070 Super 12 GB optimised, 3-class)
 _BASE = (
     "--merge-terrain --tile-context-cells 1 --num-workers 4 --ema-decay 0.999 "
     "--save-interval 100 --tiles-per-image 8 --epochs 500 --early-stopping 75"
@@ -49,12 +49,12 @@ _BASE_4CLS = (
     "--save-interval 100 --tiles-per-image 8 --epochs 500 --early-stopping 75"
 )
 
-# Batch sizes by SegFormer variant (tuned for 4090 VRAM budget)
+# Batch sizes by SegFormer variant (tuned for 4070 Super 12 GB VRAM budget)
 _BATCH: Dict[str, str] = {
-    "b0": "--batch-size 16",
-    "b1": "--batch-size 12",
-    "b2": "--batch-size 8",
-    "b3": "--batch-size 6",
+    "b0": "--batch-size 8",
+    "b1": "--batch-size 6",
+    "b2": "--batch-size 4",
+    "b3": "--batch-size 3",
 }
 
 # Model flag strings
