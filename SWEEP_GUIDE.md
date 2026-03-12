@@ -31,7 +31,28 @@ python -c "import torch; print(torch.cuda.get_device_name(0))"
 
 ---
 
-## 3. Edit start_sweep.bat (one line)
+## 3. Set up Discord notifications (optional but recommended)
+
+1. In your Discord server: **Server Settings > Integrations > Webhooks > New Webhook**
+2. Choose a channel, copy the webhook URL
+3. Open `run_sweep.py` in Notepad and paste it:
+   ```
+   DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+   ```
+4. Optionally adjust how often heartbeat summaries are sent (default: every 5 completions):
+   ```
+   DISCORD_HEARTBEAT_EVERY = 5
+   ```
+
+**Notifications you'll receive:**
+- Sweep started (experiment count + tiers)
+- Each experiment launched (tier, slot, PID)
+- Each experiment completed (best IoU, epochs, time, overall progress)
+- Each experiment failed (exit code + time) — check `train.log` for details
+- Heartbeat summary every N completions (overall best IoU so far)
+- Sweep complete (total time, top 3 IoU results)
+
+## 4. Edit start_sweep.bat (one line)
 
 Open `start_sweep.bat` in Notepad and confirm:
 ```
