@@ -725,8 +725,11 @@ def _build_dashboard(experiments: List[Dict], running: Dict,
 def _precompute_dilated_masks():
     """Run precompute_dilated_masks.py for radii 3 and 5 if not already done."""
     for radius in (3, 5):
-        dst = Path(f"data/foundry_to_mask/line_masks_d{radius}")
-        if dst.is_dir() and any(dst.iterdir()):
+        foundry_dst = Path(f"data/foundry_to_mask/line_masks_d{radius}")
+        watabou_dst = Path(f"data/watabou_to_mask_d{radius}/watabou_edge_mask")
+        foundry_ok  = foundry_dst.is_dir() and any(foundry_dst.iterdir())
+        watabou_ok  = not WATABOU_DIR or (watabou_dst.is_dir() and any(watabou_dst.iterdir()))
+        if foundry_ok and watabou_ok:
             print(f"  [precompute] line_masks_d{radius}/ already exists — skipping")
             continue
         print(f"  [precompute] Computing dilated masks radius={radius} ...")
