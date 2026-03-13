@@ -491,6 +491,9 @@ def filter_small_components(mask: np.ndarray, grid_size: int, min_size: float = 
     for cls in np.unique(mask):
         if cls == 0:
             continue
+        # Doors are intentionally small — never filter them
+        if cls in (3, 4):
+            continue
 
         binary = (mask == cls).astype(np.uint8)
 
